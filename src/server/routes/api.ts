@@ -11,7 +11,7 @@ import { quotaService } from '../quota/index.js';
 import type { QuotaProviderId } from '../quota/index.js';
 import { cache } from '../cache.js';
 import { getCodexDataPathStatuses, getCustomCodexDataPaths, getEnvironmentCodexDataPaths, getOfficialCodexDataPaths } from '../codexDataSources.js';
-import { updateCodexCustomDataPaths } from '../appSettings.js';
+import { readAppSettings, updateCodexCustomDataPaths } from '../appSettings.js';
 import { validateAppSettings } from '../../shared/schemas.js';
 
 async function getQuota(_req: Request, res: Response): Promise<void> {
@@ -61,6 +61,7 @@ function buildSettingsResponse() {
       officialDataPaths: getOfficialCodexDataPaths(),
       environmentDataPaths: getEnvironmentCodexDataPaths(),
       customDataPaths: getCustomCodexDataPaths(),
+      includeArchived: readAppSettings().codex.includeArchived,
       resolvedDataPaths: getCodexDataPathStatuses(),
     },
   });
@@ -88,7 +89,12 @@ function updateCodexDataPaths(req: Request, res: Response): void {
       return;
     }
 
-    updateCodexCustomDataPaths(paths);
+    const includeArchived = req.body?.includeArchived;
+    if (includeArchived !== undefined && typeof includeArchived !== 'boolean') {
+      res.status(400).json({ error: 'Invalid settings request', hint: 'includeArchived must be a boolean.' });
+      return;
+    }
+    updateCodexCustomDataPaths(paths, includeArchived);
     cache.clear();
     res.json(buildSettingsResponse());
   } catch (error) {

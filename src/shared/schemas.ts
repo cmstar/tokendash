@@ -124,6 +124,7 @@ const CodexDataPathStatusSchema = z.object({
 });
 
 const CodexSettingsResponseSchema = z.object({
+  includeArchived: z.boolean().default(true),
   officialDataPaths: z.array(z.string()).default([]),
   environmentDataPaths: z.array(z.string()).default([]),
   customDataPaths: z.array(z.string()).default([]),

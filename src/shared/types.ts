@@ -121,6 +121,7 @@ export interface CodexDataPathStatus {
 }
 
 export interface CodexSettingsResponse {
+  includeArchived: boolean;
   officialDataPaths: string[];
   environmentDataPaths: string[];
   customDataPaths: string[];

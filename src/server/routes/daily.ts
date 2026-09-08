@@ -1,3 +1,4 @@
+import { getCodexUsageScopeKey } from '../codexDataSources.js';
 import { type Request, type Response } from 'express';
 import { cache } from '../cache.js';
 import { validateDaily } from '../../shared/schemas.js';
@@ -10,7 +11,7 @@ import { getDailyResponse as getPiDailyResponse } from '../piParser.js';
 export async function getDaily(req: Request, res: Response): Promise<void> {
   const agent = req.query.agent as string || 'claude';
   const force = req.query.refresh === '1' || req.query.refresh === 'true';
-  const cacheKey = `daily:${agent}`;
+  const cacheKey = `daily:${agent}${agent === 'codex' ? ':' + getCodexUsageScopeKey() : ''}`;
   try {
     if (!force) {
       const cached = cache.get(cacheKey);

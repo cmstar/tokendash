@@ -16,11 +16,11 @@ export async function fetchSettings(): Promise<AppSettingsResponse> {
   return res.json();
 }
 
-export async function updateCodexDataPaths(paths: string[]): Promise<AppSettingsResponse> {
+export async function updateCodexDataPaths(paths: string[], includeArchived?: boolean): Promise<AppSettingsResponse> {
   const res = await fetch(`${BASE}/settings/codex-data-paths`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paths }),
+    body: JSON.stringify({ paths, includeArchived }),
   });
   if (!res.ok) {
     throw new Error(`Failed to update Codex data paths: ${res.status} ${res.statusText}`);

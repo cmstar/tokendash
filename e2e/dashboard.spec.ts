@@ -209,6 +209,25 @@ test.describe('Dashboard refresh', () => {
 });
 
 test.describe('Codex data-source settings', () => {
+  test('defaults to including archives and persists disabling and re-enabling them', async ({ page }) => {
+    await setupPage(page, { agents: ['codex'] });
+    await page.getByRole('button', { name: 'Configure Codex data sources' }).click();
+    const toggle = page.getByRole('switch', { name: 'Include archived conversations' });
+    await expect(toggle).toBeChecked();
+    for (const enabled of [false, true]) {
+      await toggle.setChecked(enabled);
+      const saved = page.waitForRequest(request => request.url().includes('/api/settings/codex-data-paths') && request.method() === 'PUT');
+      const refreshed = page.waitForRequest(request => request.url().includes('/api/daily?') && request.url().includes('refresh=1'));
+      await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+      expect((await saved).postDataJSON().includeArchived).toBe(enabled);
+      await refreshed;
+      await expect(page.getByText('Saved. Dashboard data is refreshing from the configured sources.')).toBeVisible();
+      await page.getByRole('button', { name: 'Close settings' }).click();
+      await page.getByRole('button', { name: 'Configure Codex data sources' }).click();
+      await expect(toggle).toBeChecked({ checked: enabled });
+    }
+  });
+
   test('opens custom path settings and saves configured sources', async ({ page }) => {
     await setupPage(page);
     const settingsRequest = page.waitForResponse(response => response.url().includes('/api/settings') && response.request().method() === 'GET');
@@ -221,9 +240,9 @@ test.describe('Codex data-source settings', () => {
 
     const putRequest = page.waitForRequest(request => request.url().includes('/api/settings/codex-data-paths') && request.method() === 'PUT');
     await page.locator('textarea').fill('/Users/test/.custom-codex\n/Users/test/.another-codex');
-    await page.locator('button:has-text("Save paths")').click();
+    await page.locator('button:has-text("Save settings")').click();
     const request = await putRequest;
-    expect(request.postDataJSON()).toEqual({ paths: ['/Users/test/.custom-codex', '/Users/test/.another-codex'] });
+    expect(request.postDataJSON()).toEqual({ paths: ['/Users/test/.custom-codex', '/Users/test/.another-codex'], includeArchived: true });
     await expect(page.locator('text=Dashboard data is refreshing')).toBeVisible();
   });
 });

@@ -25,6 +25,7 @@ function sourceLabel(kind: CodexDataPathStatus['kind']): string {
 export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSourcesSettingsProps) {
   const [settings, setSettings] = useState<AppSettingsResponse | null>(null);
   const [draft, setDraft] = useState('');
+  const [includeArchived, setIncludeArchived] = useState(true);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +33,7 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
 
   useEffect(() => {
     if (!open) return;
+    setSettings(null);
     setLoading(true);
     setSaving(false);
     setError(null);
@@ -40,6 +42,7 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
       .then(next => {
         setSettings(next);
         setDraft(next.codex.customDataPaths.join('\n'));
+        setIncludeArchived(next.codex.includeArchived ?? true);
       })
       .catch(err => setError(err instanceof Error ? err.message : 'Failed to load settings'))
       .finally(() => setLoading(false));
@@ -52,9 +55,10 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
     setError(null);
     setSaved(false);
     try {
-      const next = await updateCodexDataPaths(draftPaths);
+      const next = await updateCodexDataPaths(draftPaths, includeArchived);
       setSettings(next);
       setDraft(next.codex.customDataPaths.join('\n'));
+      setIncludeArchived(next.codex.includeArchived ?? true);
       setSaved(true);
       onSaved();
     } catch (err) {
@@ -68,7 +72,7 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-stone-950/30 px-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Codex data source settings">
-      <div className="w-full max-w-2xl rounded-2xl bg-white shadow-[0_24px_80px_rgba(28,25,23,0.22)] border border-stone-200/70">
+      <div className="max-h-[90vh] overflow-y-auto w-full max-w-2xl rounded-2xl bg-white shadow-[0_24px_80px_rgba(28,25,23,0.22)] border border-stone-200/70">
         <div className="flex items-start justify-between gap-4 border-b border-stone-100 px-6 py-5">
           <div>
             <h2 className="text-lg font-extrabold tracking-tight text-stone-900">Codex data sources</h2>
@@ -91,6 +95,19 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
             <div className="flex h-48 items-center justify-center text-[13px] font-medium text-stone-400">Loading settings…</div>
           ) : (
             <div className="space-y-5">
+              <label className="flex cursor-pointer items-center justify-between gap-4 rounded-xl border border-stone-200 bg-stone-50/60 p-3">
+                <span>
+                  <span className="block text-[13px] font-semibold text-stone-800">Include archived conversations</span>
+                  <span id="codex-archive-description" className="mt-1 block text-[12px] leading-relaxed text-stone-500">Include archived Codex conversations in usage totals, charts, and Sessions. Enabled by default.</span>
+                </span>
+                <span className="relative shrink-0">
+                  <input type="checkbox" role="switch" aria-label="Include archived conversations" aria-describedby="codex-archive-description"
+                    checked={includeArchived} disabled={saving || !settings}
+                    onChange={event => { setIncludeArchived(event.target.checked); setSaved(false); }}
+                    className="peer absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed" />
+                  <span aria-hidden="true" className="block h-6 w-11 rounded-full bg-stone-300 transition-colors after:absolute after:left-1 after:top-1 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-indigo-600 peer-checked:after:translate-x-5 peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 peer-disabled:opacity-50" />
+                </span>
+              </label>
               <div>
                 <label className="text-[12px] font-bold uppercase tracking-wider text-stone-400">Custom paths</label>
                 <textarea
@@ -140,10 +157,10 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
             <button
               type="button"
               onClick={() => { void handleSave(); }}
-              disabled={loading || saving}
+              disabled={loading || saving || !settings}
               className="rounded-lg bg-stone-900 px-4 py-2 text-[12px] font-bold text-white shadow-sm transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {saving ? 'Saving…' : 'Save paths'}
+              {saving ? 'Saving…' : 'Save settings'}
             </button>
           </div>
         </div>

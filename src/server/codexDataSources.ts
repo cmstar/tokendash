@@ -112,12 +112,19 @@ export function getCodexHomes(): string[] {
   return getCodexDataPathStatuses().map(status => status.path);
 }
 
-/** Return every live/archived transcript directory for all configured paths. */
+/** Resolve the enabled transcript directories; source detection still includes archives. */
 export function getCodexSessionDirs(): string[] {
-  return uniquePaths(getCodexDataPathStatuses().flatMap(status => status.sessionDirs));
+  const includeArchived = readAppSettings().codex.includeArchived;
+  return uniquePaths(getCodexDataPathStatuses().flatMap(status => status.sessionDirs))
+    .filter(dir => includeArchived || basename(canonicalPathKey(dir)).toLowerCase() !== 'archived_sessions');
 }
 
 /** Check whether at least one configured Codex transcript directory is readable. */
 export function isCodexSessionDirAccessible(): boolean {
   return getCodexDataPathStatuses().some(status => status.readable);
+}
+
+/** Keep cached usage from different data-source selections separate. */
+export function getCodexUsageScopeKey(): string {
+  return JSON.stringify(getCodexSessionDirs());
 }

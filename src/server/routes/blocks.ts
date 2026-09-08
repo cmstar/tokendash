@@ -1,3 +1,4 @@
+import { getCodexUsageScopeKey } from '../codexDataSources.js';
 import { type Request, type Response } from 'express';
 import { cache } from '../cache.js';
 import { validateBlocks } from '../../shared/schemas.js';
@@ -25,7 +26,7 @@ export async function getBlocks(req: Request, res: Response): Promise<void> {
   const granularity = parseGranularity(req.query.granularity);
 
   try {
-    const cacheKey = `blocks:${agent}:${project || 'all'}${granularity !== 'hour' ? `:${granularity}` : ''}`;
+    const cacheKey = `blocks:${agent}:${project || 'all'}${granularity !== 'hour' ? `:${granularity}` : ''}${agent === 'codex' ? ':' + getCodexUsageScopeKey() : ''}`;
     if (!force) {
       const cached = cache.get(cacheKey);
       if (cached) {

@@ -370,6 +370,8 @@ export async function mockApiRoutes(
   page: import('@playwright/test').Page,
   overrides: FixtureOverrides = {},
 ) {
+  let includeArchived = true;
+  let customDataPaths = ['/Users/test/.custom-codex'];
   const agentList = overrides.agents || ['claude', 'opencode', 'codex'];
   const cache = new Map<string, unknown>();
 
@@ -422,7 +424,8 @@ export async function mockApiRoutes(
             codex: {
               officialDataPaths: ['/Users/test/.codex'],
               environmentDataPaths: [],
-              customDataPaths: ['/Users/test/.custom-codex'],
+              customDataPaths,
+              includeArchived,
               resolvedDataPaths: [
                 { path: '/Users/test/.codex', kind: 'official', readable: true, sessionDirs: ['/Users/test/.codex/sessions', '/Users/test/.codex/archived_sessions'] },
                 { path: '/Users/test/.custom-codex', kind: 'custom', readable: true, sessionDirs: ['/Users/test/.custom-codex/sessions', '/Users/test/.custom-codex/archived_sessions'] },
@@ -433,12 +436,15 @@ export async function mockApiRoutes(
         break;
 
       case 'settings/codex-data-paths':
+        customDataPaths = route.request().postDataJSON().paths;
+        includeArchived = route.request().postDataJSON().includeArchived ?? includeArchived;
         await route.fulfill({
           json: {
             codex: {
               officialDataPaths: ['/Users/test/.codex'],
               environmentDataPaths: [],
-              customDataPaths: ['/Users/test/.custom-codex', '/Users/test/.another-codex'],
+              customDataPaths,
+              includeArchived,
               resolvedDataPaths: [
                 { path: '/Users/test/.codex', kind: 'official', readable: true, sessionDirs: ['/Users/test/.codex/sessions', '/Users/test/.codex/archived_sessions'] },
                 { path: '/Users/test/.custom-codex', kind: 'custom', readable: true, sessionDirs: ['/Users/test/.custom-codex/sessions', '/Users/test/.custom-codex/archived_sessions'] },

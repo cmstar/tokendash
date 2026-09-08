@@ -5,12 +5,14 @@ import { homedir } from 'node:os';
 export interface AppSettings {
   codex: {
     customDataPaths: string[];
+    includeArchived: boolean;
   };
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   codex: {
     customDataPaths: [],
+    includeArchived: true,
   },
 };
 
@@ -52,6 +54,7 @@ export function readAppSettings(): AppSettings {
     return {
       codex: {
         customDataPaths: normalizeDataPathList(raw.codex?.customDataPaths ?? []),
+        includeArchived: raw.codex?.includeArchived !== false,
       },
     };
   } catch {
@@ -64,6 +67,7 @@ export function writeAppSettings(settings: AppSettings): AppSettings {
   const normalized: AppSettings = {
     codex: {
       customDataPaths: normalizeDataPathList(settings.codex.customDataPaths),
+      includeArchived: settings.codex.includeArchived !== false,
     },
   };
   const path = settingsFilePath();
@@ -73,11 +77,13 @@ export function writeAppSettings(settings: AppSettings): AppSettings {
 }
 
 /** Replace the custom Codex-compatible data paths stored in TokenDash settings. */
-export function updateCodexCustomDataPaths(paths: string[]): AppSettings {
+export function updateCodexCustomDataPaths(paths: string[], includeArchived?: boolean): AppSettings {
+  const current = readAppSettings();
   return writeAppSettings({
-    ...readAppSettings(),
+    ...current,
     codex: {
       customDataPaths: paths,
+      includeArchived: includeArchived ?? current.codex.includeArchived,
     },
   });
 }
