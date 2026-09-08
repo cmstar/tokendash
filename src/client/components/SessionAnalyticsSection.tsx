@@ -334,8 +334,8 @@ function DetailDialog({ agent, session, onClose, restoreFocus }: { agent: string
   </div>;
 }
 
-export function SessionAnalyticsSection({ agent, project, range, refreshVersion }: { agent: string; project: string; range: string; refreshVersion: number }) {
-  const state = useSessionAnalytics({ agent, project, range }, refreshVersion);
+export function SessionAnalyticsSection({ agent, project, range, startDate, endDate, refreshVersion }: { agent: string; project: string; range: string; startDate?: string; endDate?: string; refreshVersion: number }) {
+  const state = useSessionAnalytics({ agent, project, range, startDate, endDate }, refreshVersion);
   const [selected, setSelected] = useState<SessionSummary | null>(null);
   const openerRef = useRef<HTMLTableRowElement | null>(null);
   const data = state.data;

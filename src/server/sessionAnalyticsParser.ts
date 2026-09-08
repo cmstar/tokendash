@@ -1,3 +1,4 @@
+import { isInCustomRange, type TimeRangeKey } from '../shared/dateRange.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
@@ -14,11 +15,13 @@ import { calculateCost as calculateClaudeCost, extractProjectName } from './clau
 import { parseAllSessions, scanCodexSessions, type ParsedSession } from './codexParser.js';
 import { calculateCost as calculateCodexCost } from './codexPricing.js';
 
-export type SessionAnalyticsRange = 'today' | '7d' | '30d' | '60d' | 'all';
+export type SessionAnalyticsRange = TimeRangeKey;
 
 export interface SessionAnalyticsFilters {
   project?: string;
   range?: SessionAnalyticsRange;
+  startDate?: string;
+  endDate?: string;
   model?: string;
   status?: SessionStatus;
   query?: string;
@@ -860,7 +863,7 @@ function loadSource(agent: string, revision: string): SessionSource {
 }
 
 function rangeStart(range: SessionAnalyticsRange): number | undefined {
-  if (range === 'all') return undefined;
+  if (range === 'all' || range === 'custom') return undefined;
   const now = new Date();
   if (range === 'today') return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const days = range === '7d' ? 7 : range === '30d' ? 30 : 60;
@@ -887,7 +890,9 @@ function filteredSessions(source: SessionSource, filters: SessionAnalyticsFilter
     .filter(({ summary }) => !filters.project || summary.project === filters.project)
     .filter(({ summary }) => !filters.model || summary.models.includes(filters.model))
     .filter(({ summary }) => !filters.status || summary.status === filters.status)
-    .filter(({ summary }) => !since || Date.parse(summary.startedAt) >= since)
+    .filter(({ summary }) => filters.range === 'custom'
+      ? isInCustomRange(summary.startedAt, { startDate: filters.startDate || '', endDate: filters.endDate || '' })
+      : !since || Date.parse(summary.startedAt) >= since)
     .filter(({ summary }) => !query
       || summary.id.toLowerCase().includes(query)
       || summary.project?.toLowerCase().includes(query)

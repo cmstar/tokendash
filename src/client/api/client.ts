@@ -101,6 +101,8 @@ export interface SessionAnalyticsRequest {
   agent: string;
   project?: string;
   range: string;
+  startDate?: string;
+  endDate?: string;
   model?: string;
   status?: string;
   query?: string;
@@ -114,6 +116,7 @@ export async function fetchSessionAnalytics(request: SessionAnalyticsRequest): P
   const params: Record<string, string> = {
     agent: request.agent,
     range: request.range,
+    ...(request.range === 'custom' ? { startDate: request.startDate || '', endDate: request.endDate || '' } : {}),
     ...(request.project ? { project: request.project } : {}),
     ...(request.model ? { model: request.model } : {}),
     ...(request.status ? { status: request.status } : {}),

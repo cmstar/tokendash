@@ -1,3 +1,4 @@
+import { filterByTime, type TimeRangeKey, type CustomDateRange } from '../../shared/dateRange.js';
 import { useMemo } from 'react';
 import {
   AreaChart, Area, LineChart, Line,
@@ -42,62 +43,33 @@ function formatNumber(n: number): string {
   return n.toString();
 }
 
-// --- Time range filter helper ---
-
-type TimeRangeKey = 'today' | '7d' | '30d' | '60d' | 'all';
-
-const TIME_RANGES = [
-  { key: 'today', days: 1 },
-  { key: '7d', days: 7 },
-  { key: '30d', days: 30 },
-  { key: '60d', days: 60 },
-  { key: 'all', days: 0 },
-] as const;
-
-function filterByDate<T extends { date: string }>(data: T[], rangeKey: TimeRangeKey): T[] {
-  if (rangeKey === 'all') return data;
-  if (rangeKey === 'today') {
-    const now = new Date();
-    const todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-    return data.filter(d => {
-      const dt = new Date(d.date);
-      const fieldStr = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
-      return fieldStr === todayStr;
-    });
-  }
-  const range = TIME_RANGES.find(t => t.key === rangeKey);
-  const days = range ? range.days : 30;
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
-  return data.filter(d => new Date(d.date) >= cutoff);
-}
-
 // --- Props ---
 
 interface AnalyticsSectionProps {
   analytics: AnalyticsResponse;
   timeRange: TimeRangeKey;
+  customRange: CustomDateRange;
 }
 
 // --- Component ---
 
-export function AnalyticsSection({ analytics, timeRange }: AnalyticsSectionProps) {
+export function AnalyticsSection({ analytics, timeRange, customRange }: AnalyticsSectionProps) {
   const { codeChangeTrend, toolCallTrend } = analytics;
 
-  const filteredChanges = useMemo(() => filterByDate(codeChangeTrend, timeRange), [codeChangeTrend, timeRange]);
-  const filteredToolTrend = useMemo(() => filterByDate(toolCallTrend, timeRange), [toolCallTrend, timeRange]);
+  const filteredChanges = useMemo(() => filterByTime(codeChangeTrend, timeRange, customRange), [codeChangeTrend, timeRange, customRange]);
+  const filteredToolTrend = useMemo(() => filterByTime(toolCallTrend, timeRange, customRange), [toolCallTrend, timeRange, customRange]);
 
   // Get top 6 tools for the trend chart
   const topTools = useMemo(() => {
     const toolCounts = new Map<string, number>();
-    for (const d of toolCallTrend) {
+    for (const d of filteredToolTrend) {
       for (const [key, val] of Object.entries(d)) {
         if (key === 'date') continue;
         toolCounts.set(key, (toolCounts.get(key) || 0) + (val as number));
       }
     }
     return [...toolCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name]) => name);
-  }, [toolCallTrend]);
+  }, [filteredToolTrend]);
 
   // Daily averages from filtered data
   const dailyAvg = useMemo(() => {

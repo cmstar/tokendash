@@ -35,6 +35,23 @@ const sessions: SessionAnalyticsIndexedSession[] = [
 ];
 
 describe('buildSessionAnalyticsResponse', () => {
+  it('applies inclusive custom dates before aggregation and pagination', () => {
+    const indexed = [27, 28, 29, 30].map((day, index) => ({
+      ...sessions[0],
+      summary: { ...sessions[0].summary, id: `range-${index}`, startedAt: new Date(2026, 6, day, 23, 59, 59, 999).toISOString() },
+    }));
+    const result = buildSessionAnalyticsResponse(indexed, capabilities, {
+      range: 'custom', startDate: '2026-07-28', endDate: '2026-07-29', limit: 1,
+    });
+    expect(result.summary.sessionCount).toBe(2);
+    expect(result.pagination.totalCount).toBe(2);
+    expect(result.sessions.map(session => session.id)).toEqual(['range-2']);
+    const singleDay = buildSessionAnalyticsResponse(indexed, capabilities, {
+      range: 'custom', startDate: '2026-07-28', endDate: '2026-07-28',
+    });
+    expect(singleDay.sessions.map(session => session.id)).toEqual(['range-1']);
+  });
+
   it('aggregates metadata while preserving unavailable Skill semantics', () => {
     const result = buildSessionAnalyticsResponse(sessions, capabilities, { range: 'all', limit: 1 });
 

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { generateDailyResponse, generateSessionDetail, mockApiRoutes } from './fixtures.js';
 import { formatTokens } from '../src/client/utils/formatters.js';
+import { localDateKey } from '../src/shared/dateRange.js';
 
 // ---------------------------------------------------------------------------
 // Helper: set up mocked page and wait for initial load
@@ -296,6 +297,61 @@ test.describe('Time range: 30D', () => {
     const hourly = page.locator('text=Hourly breakdown');
     const visible = await hourly.isVisible().catch(() => false);
     expect(visible).toBe(false);
+  });
+});
+
+test.describe('Time range: Custom', () => {
+  test('filters inclusive dates, persists them, and passes them to Sessions', async ({ page }) => {
+    await setupPage(page);
+    const entries = generateDailyResponse('claude').daily.slice(2, 5);
+    const dates = entries.map(entry => entry.date).sort();
+    const startDate = dates[0];
+    const endDate = dates[dates.length - 1];
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    await page.getByLabel('Start date', { exact: true }).fill(startDate);
+    await page.getByLabel('End date', { exact: true }).fill(endDate);
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page.locator('table tbody tr')).toHaveCount(3);
+    const total = entries.reduce((sum, entry) => sum + entry.totalTokens, 0);
+    await expect(page.locator('span:text-is("Total tokens")').locator('..')).toContainText(formatTokens(total));
+    await page.reload();
+    await expect(page.getByLabel('Start date', { exact: true })).toHaveValue(startDate);
+    await expect(page.getByLabel('End date', { exact: true })).toHaveValue(endDate);
+    await expect(page.locator('table tbody tr')).toHaveCount(3);
+    const request = page.waitForRequest(req => {
+      const url = new URL(req.url());
+      return url.pathname === '/api/session-analytics' && url.searchParams.get('range') === 'custom'
+        && url.searchParams.get('startDate') === startDate && url.searchParams.get('endDate') === endDate;
+    });
+    await page.getByRole('button', { name: 'Sessions', exact: true }).click();
+    await request;
+    await page.getByRole('button', { name: '7D', exact: true }).click();
+    await expect(page.getByLabel('Start date', { exact: true })).toHaveCount(0);
+  });
+
+  test('allows a single day and blocks future, reversed and missing dates', async ({ page }) => {
+    await setupPage(page);
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    const start = page.getByLabel('Start date', { exact: true });
+    const end = page.getByLabel('End date', { exact: true });
+    const apply = page.getByRole('button', { name: 'Apply', exact: true });
+    const today = localDateKey();
+    await start.fill(today);
+    await end.fill(today);
+    await expect(apply).toBeEnabled();
+    await apply.click();
+    await expect(page.locator('table tbody tr')).toHaveCount(1);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    await end.fill(localDateKey(tomorrow));
+    await expect(page.getByRole('alert')).toHaveText('End date cannot be later than today.');
+    await expect(apply).toBeDisabled();
+    await end.fill('2020-01-01');
+    await expect(page.getByRole('alert')).toHaveText('Start date cannot be later than end date.');
+    await expect(apply).toBeDisabled();
+    await start.fill('');
+    await expect(apply).toBeDisabled();
+    await expect(page.locator('table tbody tr')).toHaveCount(1);
   });
 });
 

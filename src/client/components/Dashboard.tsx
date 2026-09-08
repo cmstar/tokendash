@@ -14,6 +14,8 @@ import { cacheHitRate as calculateCacheHitRate, costSavedByCache } from '../util
 import { modelTokenMode, modelBreakdownTokens } from '../utils/modelAggregation.js';
 
 import { shortModelName } from '../utils/modelNames.js';
+import { CustomDateRangePicker } from './CustomDateRangePicker.js';
+import { filterByTime, dateRangeError, localDateKey, type CustomDateRange, type TimeRangeKey } from '../../shared/dateRange.js';
 import { AnalyticsSection } from './AnalyticsSection.js';
 import { CodexDataSourcesSettings } from './CodexDataSourcesSettings.js';
 import { SessionAnalyticsSection } from './SessionAnalyticsSection.js';
@@ -41,9 +43,9 @@ const TIME_RANGES = [
   { key: '30d', label: '30D', days: 30 },
   { key: '60d', label: '60D', days: 60 },
   { key: 'all', label: 'ALL', days: 0 },
+  { key: 'custom', label: 'Custom', days: 0 },
 ] as const;
 
-type TimeRangeKey = typeof TIME_RANGES[number]['key'];
 
 /* ---- Shared UI primitives ---- */
 
@@ -104,7 +106,7 @@ function TooltipBox({ active, payload, label, fmt = formatTokens }: { active?: b
 
 function FilterTab({ options, value, onChange }: { options: readonly { key: string; label: string }[]; value: string; onChange: (v: string) => void }) {
   return (
-    <div className="flex items-center gap-0.5 p-0.5 bg-stone-100 rounded-lg">
+    <div className="flex flex-wrap items-center gap-0.5 p-0.5 bg-stone-100 rounded-lg">
       {options.map(o => (
         <button key={o.key} onClick={() => onChange(o.key)}
           className={`px-3 py-1.5 rounded-md text-[11px] font-semibold tracking-wide transition-all duration-200 ${value === o.key ? 'bg-stone-800 text-white shadow-sm' : 'text-stone-500 hover:text-stone-800 hover:bg-stone-50'}`}>
@@ -127,34 +129,12 @@ function ProjectSelect({ projects, value, onChange }: { projects: string[]; valu
 
 /* ---- Aggregation helpers ---- */
 
-function filterByTime<T extends { date?: string; startTime?: string }>(data: T[], rangeKey: TimeRangeKey): T[] {
-  if (rangeKey === 'all') return data;
-  if (rangeKey === 'today') {
-    const now = new Date();
-    const todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-    return data.filter(d => {
-      const field = d.date || d.startTime || '';
-      const dt = new Date(field);
-      const fieldStr = dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0');
-      return fieldStr === todayStr;
-    });
-  }
-  const range = TIME_RANGES.find(t => t.key === rangeKey);
-  const days = range ? range.days : 30;
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - days);
-  return data.filter(d => {
-    const field = d.date || d.startTime || '';
-    return new Date(field) >= cutoff;
-  });
-}
-
-function filterProjectDaily(projects: Record<string, DailyEntry[]>, project: string, range: TimeRangeKey): DailyEntry[] {
+function filterProjectDaily(projects: Record<string, DailyEntry[]>, project: string, range: TimeRangeKey, custom: CustomDateRange): DailyEntry[] {
   if (!project) {
     // Merge all projects by date
     const merged: Record<string, DailyEntry> = {};
     for (const entries of Object.values(projects)) {
-      for (const e of filterByTime(entries, range)) {
+      for (const e of filterByTime(entries, range, custom)) {
         if (!merged[e.date]) {
           merged[e.date] = { ...e, modelsUsed: [...e.modelsUsed], modelBreakdowns: e.modelBreakdowns.map(b => ({ ...b })) };
         } else {
@@ -182,7 +162,7 @@ function filterProjectDaily(projects: Record<string, DailyEntry[]>, project: str
     }
     return Object.values(merged).sort((a, b) => a.date.localeCompare(b.date));
   }
-  return filterByTime(projects[project] || [], range);
+  return filterByTime(projects[project] || [], range, custom);
 }
 
 
@@ -196,6 +176,12 @@ export function Dashboard() {
   const hasNoAnalytics = agent === 'codex' || agent === 'opencode' || agent === 'pi';
 
   const [timeRange, setTimeRange] = useLocalStorageState<TimeRangeKey>('dashboard_timeRange', '30d');
+  const [storedCustomRange, setCustomRange] = useLocalStorageState<CustomDateRange>('dashboard_customRange', {
+    startDate: localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 29)),
+    endDate: localDateKey(),
+  });
+  const customRange = useMemo(() => storedCustomRange && !dateRangeError(storedCustomRange)
+    ? storedCustomRange : { startDate: localDateKey(), endDate: localDateKey() }, [storedCustomRange]);
   const [project, setProject] = useLocalStorageState('dashboard_project', '');
   const [showPricing, setShowPricing] = useState(false);
   const [showDataSourceSettings, setShowDataSourceSettings] = useState(false);
@@ -288,17 +274,17 @@ export function Dashboard() {
   // separately; only use it when the user explicitly selects a project.
   const filteredDaily = useMemo(() => {
     if (project && projectsData.data) {
-      return filterProjectDaily(projectsData.data.projects, project, timeRange);
+      return filterProjectDaily(projectsData.data.projects, project, timeRange, customRange);
     }
     if (dailyData.data) {
-      return filterByTime(dailyData.data.daily, timeRange);
+      return filterByTime(dailyData.data.daily, timeRange, customRange);
     }
     // Fallback while dailyData is loading: use projectsData if available.
     if (projectsData.data) {
-      return filterProjectDaily(projectsData.data.projects, project, timeRange);
+      return filterProjectDaily(projectsData.data.projects, project, timeRange, customRange);
     }
     return [];
-  }, [projectsData.data, dailyData.data, project, timeRange]);
+  }, [projectsData.data, dailyData.data, project, timeRange, customRange]);
 
   const isToday = timeRange === 'today';
 
@@ -446,7 +432,7 @@ export function Dashboard() {
     if (!projectsData.data) return [];
     return Object.entries(projectsData.data.projects)
       .map(([path, entries]) => {
-        const filtered = filterByTime(entries, timeRange);
+        const filtered = filterByTime(entries, timeRange, customRange);
         return {
           name: formatProjectName(path, projectList),
           full: path,
@@ -456,7 +442,7 @@ export function Dashboard() {
       })
       .filter(d => d.tokens > 0)
       .sort((a, b) => b.tokens - a.tokens);
-  }, [projectsData.data, timeRange]);
+  }, [projectsData.data, timeRange, customRange]);
 
   // Cache trend data
   const cacheTrendData = useMemo(() => filteredDaily.map(d => ({
@@ -492,7 +478,9 @@ export function Dashboard() {
       cutoffDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack);
     }
 
-    const filteredBlocks = blocksData.data.blocks.filter(b => new Date(b.startTime) >= cutoffDate);
+    const filteredBlocks = timeRange === 'custom'
+      ? filterByTime(blocksData.data.blocks, timeRange, customRange)
+      : blocksData.data.blocks.filter(b => new Date(b.startTime) >= cutoffDate);
 
     // Create 7x24 grid
     const grid: number[][] = Array(7).fill(0).map(() => Array(24).fill(0));
@@ -513,7 +501,7 @@ export function Dashboard() {
       if (grid[day][hour] > maxVal) maxVal = grid[day][hour];
     }
     return { grid, maxVal };
-  }, [blocksData.data, timeRange, isTokens]);
+  }, [blocksData.data, timeRange, customRange, isTokens]);
 
 
   const AGENT_CONFIG: Record<string, { label: string; activeColor: string; icon: ReactElement }> = {
@@ -715,6 +703,7 @@ export function Dashboard() {
             <div className="flex flex-col gap-2">
               <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider">Time range</span>
               <FilterTab options={TIME_RANGES} value={timeRange} onChange={v => setTimeRange(v as TimeRangeKey)} />
+              {timeRange === 'custom' && <CustomDateRangePicker value={customRange} onApply={setCustomRange} />}
             </div>
 
             {projectList.length > 0 && (
@@ -775,7 +764,7 @@ export function Dashboard() {
       </div>
 
       {metric === 'sessions' ? (
-        <SessionAnalyticsSection key={`${agent}:${project}:${timeRange}`} agent={agent} project={project} range={timeRange} refreshVersion={sessionRefreshVersion} />
+        <SessionAnalyticsSection key={`${agent}:${project}:${timeRange}:${customRange.startDate}:${customRange.endDate}`} agent={agent} project={project} range={timeRange} startDate={timeRange === 'custom' ? customRange.startDate : undefined} endDate={timeRange === 'custom' ? customRange.endDate : undefined} refreshVersion={sessionRefreshVersion} />
       ) : <>
       {/* KPI Row */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
@@ -978,7 +967,7 @@ export function Dashboard() {
 
       {/* Section: Code Analytics (Claude Code & OpenClaw only) */}
       {!hasNoAnalytics && analyticsData.data && (
-        <AnalyticsSection analytics={analyticsData.data} timeRange={timeRange} />
+        <AnalyticsSection analytics={analyticsData.data} timeRange={timeRange} customRange={customRange} />
       )}
 
       {/* Daily Detail Table */}
