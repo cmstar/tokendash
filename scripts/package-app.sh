@@ -74,7 +74,7 @@ fi
 # CFBundleVersion MUST be an incrementing integer (Sparkle compares these).
 APP_VERSION=$(node -p "require('$REPO_ROOT/package.json').version" 2>/dev/null || echo "2.0.0")
 BUILD_NUMBER="$("$REPO_ROOT/scripts/resolve-sparkle-build-number.sh")"
-SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/ReachForStar/tokendash/releases/latest/download/appcast.xml}"
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://github.com/zhangferry/tokendash/releases/latest/download/appcast.xml}"
 # EdDSA public key: from env, or ~/.tokendash/eddsa_pub.key, or empty (warn).
 SPARKLE_EDDSA_PUB="${SPARKLE_EDDSA_PUB:-}"
 if [ -z "$SPARKLE_EDDSA_PUB" ] && [ -f ~/.tokendash/eddsa_pub.key ]; then

@@ -18,7 +18,7 @@ ARCH=$(uname -m)
 DMG="release/TokenDash-$VERSION-$ARCH.dmg"
 APPCAST="release/appcast.xml"
 REGISTRY="https://registry.npmjs.org"
-REPO="ReachForStar/tokendash"
+REPO="${GITHUB_REPO:-zhangferry/tokendash}"
 # Git remote that hosts REPO; release checks and pushes use it, not a fixed origin.
 GIT_REMOTE="${GIT_REMOTE:-origin}"
 DEFAULT_SPARKLE_PRIVATE_KEY_FILE="$HOME/.tokendash/eddsa_priv.key"

@@ -23,7 +23,7 @@ ARCH=$(uname -m)
 DMG_NAME="TokenDash-$APP_VERSION-$ARCH.dmg"
 DMG_PATH="$RELEASES_DIR/$DMG_NAME"
 TAG="v$APP_VERSION"
-DOWNLOAD_PREFIX="https://github.com/ReachForStar/tokendash/releases/download/$TAG/"
+DOWNLOAD_PREFIX="https://github.com/zhangferry/tokendash/releases/download/$TAG/"
 SPARKLE_KEY_ACCOUNT="${SPARKLE_KEY_ACCOUNT:-ed25519}"
 
 if [ ! -x "$GEN_APPCAST" ]; then
@@ -52,7 +52,7 @@ cp "$DMG_PATH" "$STAGING_DIR/$DMG_NAME"
 echo "==> Generating appcast.xml for $TAG ..."
 APPCAST_ARGS=(
     --download-url-prefix "$DOWNLOAD_PREFIX"
-    --link "https://github.com/ReachForStar/tokendash/releases/tag/$TAG"
+    --link "https://github.com/zhangferry/tokendash/releases/tag/$TAG"
 )
 if [ -n "${SPARKLE_PRIVATE_KEY_FILE:-}" ]; then
     [ -s "$SPARKLE_PRIVATE_KEY_FILE" ] || {
@@ -69,4 +69,4 @@ cp "$STAGING_DIR/appcast.xml" "$RELEASES_DIR/appcast.xml"
 echo ""
 echo "✅ Generated: $RELEASES_DIR/appcast.xml"
 echo "   Upload $DMG_NAME and appcast.xml to GitHub Release $TAG."
-echo "   Feed URL: https://github.com/ReachForStar/tokendash/releases/latest/download/appcast.xml"
+echo "   Feed URL: https://github.com/zhangferry/tokendash/releases/latest/download/appcast.xml"

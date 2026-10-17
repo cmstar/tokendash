@@ -10,7 +10,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REPO="${GITHUB_REPO:-ReachForStar/tokendash}"
+REPO="${GITHUB_REPO:-zhangferry/tokendash}"
 FEED_URL="${SPARKLE_FEED_URL:-https://github.com/${REPO}/releases/latest/download/appcast.xml}"
 LOOKBACK="${SPARKLE_RELEASE_LOOKBACK:-10}"
 STRICT="${SPARKLE_BUILD_STRICT:-0}"
