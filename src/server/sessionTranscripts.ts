@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import { openSqliteReader } from './sqliteReader.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -24,14 +24,25 @@ function record(value: unknown): Record<string, unknown> {
 export function readPiTranscript(file: string): TranscriptMessage[] {
   const messages: TranscriptMessage[] = [];
   for (const line of readFileSync(file, 'utf8').split('\n').filter(line => line.trim())) {
-    const row = JSON.parse(line) as Record<string, unknown>;
+    let row: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      row = parsed as Record<string, unknown>;
+    } catch {
+      // A live JSONL writer may leave the final record incomplete until its next write.
+      continue;
+    }
+    if (typeof row.timestamp !== 'string' && typeof row.timestamp !== 'number') continue;
+    const date = new Date(row.timestamp);
+    if (!Number.isFinite(date.getTime())) continue;
+    const timestamp = date.toISOString();
     if (row.type !== 'message') {
-      if (row.type === 'compaction' || row.type === 'branch_summary') messages.push({ id: String(row.id), sessionId: '', timestamp: new Date(String(row.timestamp)).toISOString(), role: 'runtime', content: typeof row.summary === 'string' ? row.summary : JSON.stringify({ type: row.type, details: row.details }) });
-      if (row.type === 'model_change') messages.push({ id: String(row.id), sessionId: '', timestamp: new Date(String(row.timestamp)).toISOString(), role: 'runtime', content: JSON.stringify({ type: row.type, model: row.modelId }) });
+      if (row.type === 'compaction' || row.type === 'branch_summary') messages.push({ id: String(row.id), sessionId: '', timestamp, role: 'runtime', content: typeof row.summary === 'string' ? row.summary : JSON.stringify({ type: row.type, details: row.details }) });
+      if (row.type === 'model_change') messages.push({ id: String(row.id), sessionId: '', timestamp, role: 'runtime', content: JSON.stringify({ type: row.type, model: row.modelId }) });
       continue;
     }
     const message = record(row.message);
-    const timestamp = new Date(String(row.timestamp)).toISOString();
     messages.push({ id: String(row.id), sessionId: '', timestamp, role: String(message.role), model: typeof message.model === 'string' ? message.model : undefined, content: message.content, callId: typeof message.toolCallId === 'string' ? message.toolCallId : undefined, toolName: typeof message.toolName === 'string' ? message.toolName : undefined, success: typeof message.isError === 'boolean' ? !message.isError : undefined, error: message.stopReason === 'error' || message.stopReason === 'aborted' });
   }
   return messages;
@@ -40,16 +51,16 @@ export function readPiTranscript(file: string): TranscriptMessage[] {
 export function readOpenCodeTranscripts(): TranscriptMessage[] {
   const path = join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
   if (!existsSync(path)) return [];
-  const db = new DatabaseSync(path, { readOnly: true });
+  const db = openSqliteReader(path);
   try {
-    const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => String(row.name)));
+    const tables = new Set(db.all("SELECT name FROM sqlite_master WHERE type='table'").map(row => String(row.name)));
     let rows: Record<string, unknown>[];
     const parts = new Map<string, unknown[]>();
     if (tables.has('session_message')) {
-      rows = db.prepare('SELECT m.*, s.directory FROM session_message m LEFT JOIN session_v2 s ON s.id=m.session_id ORDER BY m.time_created, m.seq').all();
+      rows = db.all('SELECT m.*, s.directory FROM session_message m LEFT JOIN session_v2 s ON s.id=m.session_id ORDER BY m.time_created, m.seq');
     } else if (tables.has('message')) {
-      rows = db.prepare('SELECT * FROM message ORDER BY rowid').all();
-      if (tables.has('part')) for (const row of db.prepare('SELECT * FROM part ORDER BY rowid').all()) {
+      rows = db.all('SELECT * FROM message ORDER BY rowid');
+      if (tables.has('part')) for (const row of db.all('SELECT * FROM part ORDER BY rowid')) {
         const key = String(row.message_id);
         if (!parts.has(key)) parts.set(key, []);
         parts.get(key)!.push(JSON.parse(String(row.data)));

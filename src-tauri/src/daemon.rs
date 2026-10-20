@@ -131,7 +131,7 @@ pub async fn ensure_started(app: &AppHandle) -> Result<u16, String> {
 
     let Some(node) = state.node_path.clone() else {
         let message =
-            "未找到 Node.js 22 或更高版本。安装 Node.js 后重新打开 TokenDash。".to_string();
+            "未找到受支持的 Node.js 20.10 或更高版本。请检查 TOKENDASH_NODE 或安装 Node.js 后重新打开 TokenDash。".to_string();
         state.set_error(Some(message.clone()));
         return Err(message);
     };
@@ -351,12 +351,7 @@ fn terminate_pid(pid: u32) {
 /// Locates the Node.js binary. A GUI launch inherits a minimal `PATH`, so the
 /// version managers are scanned directly instead of relying on the shell.
 pub fn find_node() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("TOKENDASH_NODE") {
-        let candidate = PathBuf::from(path);
-        if is_executable(&candidate) {
-            return Some(candidate);
-        }
-    }
+    let explicit = std::env::var_os("TOKENDASH_NODE").map(PathBuf::from);
 
     let home = paths::home_dir();
     let mut candidates: Vec<PathBuf> = vec![
@@ -388,9 +383,44 @@ pub fn find_node() -> Option<PathBuf> {
         }
     }
 
-    candidates
-        .into_iter()
-        .find(|candidate| is_executable(candidate))
+    select_node(explicit, candidates, supports_node_runtime)
+}
+
+fn select_node(
+    explicit: Option<PathBuf>,
+    candidates: Vec<PathBuf>,
+    supports: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    // An explicit override is authoritative: fail rather than silently choosing
+    // a different runtime when the requested binary is missing or too old.
+    if let Some(candidate) = explicit {
+        return supports(&candidate).then_some(candidate);
+    }
+    candidates.into_iter().find(|candidate| supports(candidate))
+}
+
+fn supports_node_runtime(candidate: &Path) -> bool {
+    if !is_executable(candidate) {
+        return false;
+    }
+    let Ok(output) = Command::new(candidate).arg("--version").output() else {
+        return false;
+    };
+    output.status.success() && supported_node_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn supported_node_version(version: &str) -> bool {
+    let Some(version) = version.trim().strip_prefix('v') else {
+        return false;
+    };
+    let parts: Vec<u64> = match version.split('.').map(str::parse).collect() {
+        Ok(parts) => parts,
+        Err(_) => return false,
+    };
+    match parts.as_slice() {
+        [major, minor, patch] => (*major, *minor, *patch) >= (20, 10, 0),
+        _ => false,
+    }
 }
 
 /// Highest version directory below `base` (e.g. `v22.11.0`), so an nvm user gets
@@ -491,6 +521,54 @@ mod tests {
         assert_eq!(numeric_parts("v22.11.0"), vec![22, 11, 0]);
         assert_eq!(numeric_parts("v9.0.0"), vec![9, 0, 0]);
         assert!(numeric_parts("v22.11.0") > numeric_parts("v9.0.0"));
+    }
+
+    #[test]
+    fn node_runtime_requires_at_least_node_twenty_ten() {
+        for version in ["v20.10.0", "v21.0.0", "v22.11.0\n", "v24.1.0"] {
+            assert!(supported_node_version(version));
+        }
+        for version in [
+            "v18.20.0",
+            "v19.9.0",
+            "v20.0.0",
+            "v20.9.9",
+            "",
+            "node 22",
+            "vunknown",
+            "v22",
+            "v22.0.0.junk",
+            "v22.0.junk",
+        ] {
+            assert!(!supported_node_version(version));
+        }
+    }
+
+    #[test]
+    fn node_selection_skips_old_system_runtime_for_version_manager() {
+        let system = PathBuf::from("/usr/bin/node");
+        let managed = PathBuf::from("/home/test/.nvm/versions/node/v22.11.0/bin/node");
+        let selected = select_node(None, vec![system, managed.clone()], |path| {
+            path == managed.as_path()
+        });
+        assert_eq!(selected, Some(managed));
+    }
+
+    #[test]
+    fn unsupported_explicit_node_does_not_fall_back() {
+        let explicit = PathBuf::from("/custom/node18");
+        let fallback = PathBuf::from("/custom/node22");
+        let selected = select_node(Some(explicit), vec![fallback.clone()], |path| {
+            path == fallback.as_path()
+        });
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn supported_explicit_node_takes_precedence() {
+        let explicit = PathBuf::from("/custom/node20.10");
+        let selected = select_node(Some(explicit.clone()), vec![], |_| true);
+        assert_eq!(selected, Some(explicit));
     }
 
     #[test]

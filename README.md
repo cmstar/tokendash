@@ -62,19 +62,19 @@ A native tray app for Linux ships as a `.deb` and an AppImage, built with Tauri 
 
 3. Launch **TokenDash**. It starts the same local dashboard automatically and shows today's token total in the system tray.
 
-The tray uses the AppIndicator API, so GNOME needs the **ubuntu-appindicators** extension (preinstalled on Ubuntu). Because AppIndicator does not deliver icon-click events, open the popover panel from the tray menu (right-click the icon, then **打开面板**). The app bundles the dashboard server but not Node.js: install Node.js 22 or later (system package, nvm, fnm, or asdf) so the tray can run it.
+The tray uses the AppIndicator API, so GNOME needs the **ubuntu-appindicators** extension (preinstalled on Ubuntu). Because AppIndicator does not deliver icon-click events, open the popover panel from the tray menu (right-click the icon, then **打开面板**). The app bundles the dashboard server but not Node.js: install Node.js 20.10 or later (system package, nvm, fnm, or asdf) so the tray can run it. The app skips incompatible system runtimes when looking for Node.js. With Node.js 20, also install the `sqlite3` command (`sudo apt install sqlite3`) to read OpenCode data; recent Node.js 22 and Node.js 24 use their built-in SQLite support.
 
 The popover panel mirrors the macOS menu bar app: today's tokens, cost, and cache rate; an hourly activity chart with 1D/3H/15M ranges; model and token-type usage; the seven-day trend; and coding-plan quota status. The panel is borderless and frameless — drag it by its header to move it, and it stays open until you dismiss it from the tray menu or press Escape. Panel settings (launch at login, background refresh interval, appearance, low-quota alerts, and API credentials) live under the panel's **Settings** entry and are shared with the tray process.
 
 ### Run the Web Dashboard
 
-On macOS, Linux, or Windows, run the local web dashboard with Node.js 20 or later:
+On macOS, Linux, or Windows, run the local web dashboard with Node.js 20.10 or later:
 
 ```bash
 npx @zhangferry-dev/tokendash
 ```
 
-TokenDash opens `http://localhost:3456` automatically. No global installation is required.
+TokenDash opens `http://localhost:3456` automatically. No global installation is required. On runtimes without built-in SQLite support (including Node.js 20), install the `sqlite3` command to read OpenCode data; other agents do not require it.
 
 ## What You Get
 

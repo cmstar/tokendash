@@ -1,7 +1,7 @@
 import './appSettings.js';
 import { modelCost, getPricingExchangeRate } from '../shared/modelPricing.js';
 import { existsSync, statSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
+import { openSqliteReader } from './sqliteReader.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { DailyEntry, DailyResponse, ProjectsResponse, BlockEntry, BlocksResponse } from '../shared/types.js';
@@ -68,26 +68,22 @@ interface RawEventRow {
   session_id?: string | null;
 }
 
-function tableExists(db: DatabaseSync, name: string): boolean {
-  const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
-  return !!row;
-}
-
 function queryOpenCodeRows(): RawEventRow[] {
-  const db = new DatabaseSync(OPENCODE_DB, { readOnly: true });
+  const db = openSqliteReader(OPENCODE_DB);
   try {
-    if (tableExists(db, 'session_message')) {
-      return db.prepare(
+    const tables = new Set(db.all("SELECT name FROM sqlite_master WHERE type = 'table'").map(row => row.name));
+    if (tables.has('session_message')) {
+      return db.all(
         `SELECT m.data AS data, m.session_id AS session_id, s.directory AS directory
          FROM session_message m
          LEFT JOIN session_v2 s ON s.id = m.session_id
          WHERE m.type = 'assistant'`,
-      ).all() as unknown as RawEventRow[];
+      ) as unknown as RawEventRow[];
     }
-    if (tableExists(db, 'message')) {
-      return db.prepare(
-        `SELECT data FROM message WHERE json_extract(data, '$.role') = 'assistant'`,
-      ).all() as unknown as RawEventRow[];
+    if (tables.has('message')) {
+      return db.all(
+        `SELECT data, session_id FROM message WHERE json_extract(data, '$.role') = 'assistant'`,
+      ) as unknown as RawEventRow[];
     }
     return [];
   } finally {

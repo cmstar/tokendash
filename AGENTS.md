@@ -66,38 +66,3 @@ For every release:
 
 Do not publish npm or create the GitHub Release manually; the unified deploy
 script enforces the paired DMG/appcast requirement for Sparkle updates.
-
-## Branch Workflow
-
-The repository uses a two-branch model: `main` (stable, releasable) and `develop` (integration for in-progress work).
-
-- `main` is the only branch that may be released. It must always build and pass tests.
-- `develop` is the default working branch. All new features and fixes land here first.
-- Do not commit directly to `main` except for fast-forward merges from `develop` or hotfixes that are immediately merged back.
-
-### Starting a task
-
-1. Ensure `develop` is up to date with `main`:
-   ```bash
-   git checkout main && git pull
-   git checkout develop && git pull
-   git merge main   # only if develop lags behind main
-   ```
-2. Branch short-lived work off `develop` when needed (`git checkout -b feat/xxx develop`), or commit directly on `develop` for small changes.
-
-### Completing a task
-
-1. Run the relevant tests (`npm test` for small changes, `npm run test:e2e` for larger ones) and fix all failures.
-2. Commit on `develop` and push.
-3. Merge `develop` into `main` after the task is verified:
-   ```bash
-   git checkout main && git merge develop && git push
-   ```
-4. Delete merged feature branches. Keep only `main` and `develop` long-term.
-
-### Branch hygiene
-
-- Before merging any feature branch into `develop`, first merge the current `develop` (or `main`) into that branch so it stays reconciled with the latest code.
-- Delete stale or already-merged branches after inspecting them; do not accumulate dead branches.
-- Never force-push `main` or `develop`. Rebase only local unshared branches.
-- Release commits and tags are produced only from `main` per the Release Checklist above.

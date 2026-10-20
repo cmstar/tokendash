@@ -98,9 +98,36 @@ pub fn launch_exec() -> String {
         .unwrap_or_else(|_| "tokendash-desktop".to_string())
 }
 
+/// Desktop entries decode string escapes before parsing Exec quoting. Escape
+/// each layer separately so the executable remains one literal argument.
+/// https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html
+fn quote_desktop_exec(executable: &str) -> Result<String, String> {
+    if executable.contains(['=', '\0']) {
+        return Err("自启程序路径不能包含等号或 NUL 字符".to_string());
+    }
+    let mut quoted = String::from("\"");
+    for character in executable.chars() {
+        match character {
+            '\"' | '`' | '$' | '\\' => {
+                quoted.push('\\');
+                quoted.push(character);
+            }
+            '%' => quoted.push_str("%%"),
+            _ => quoted.push(character),
+        }
+    }
+    quoted.push('\"');
+    Ok(quoted
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t"))
+}
+
 pub fn apply_autostart(enabled: bool) -> Result<(), String> {
     let path = autostart_path();
     if enabled {
+        let executable = quote_desktop_exec(&launch_exec())?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| format!("无法创建自启目录：{error}"))?;
         }
@@ -112,7 +139,7 @@ pub fn apply_autostart(enabled: bool) -> Result<(), String> {
              Exec={}\n\
              Terminal=false\n\
              X-GNOME-Autostart-enabled=true\n",
-            launch_exec()
+            executable
         );
         fs::write(&path, entry).map_err(|error| format!("无法写入自启文件：{error}"))?;
         return Ok(());
@@ -131,6 +158,32 @@ pub fn is_autostart_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_exec_quotes_paths_with_spaces_and_reserved_characters() {
+        assert_eq!(
+            quote_desktop_exec("/home/user/My Apps/TokenDash's (stable);&.AppImage").unwrap(),
+            "\"/home/user/My Apps/TokenDash's (stable);&.AppImage\""
+        );
+    }
+
+    #[test]
+    fn desktop_exec_escapes_both_parsing_layers_and_field_codes() {
+        assert_eq!(
+            quote_desktop_exec(r#"/tmp/a"b$c`d\e%f.AppImage"#).unwrap(),
+            r#""/tmp/a\\"b\\$c\\`d\\\\e%%f.AppImage""#
+        );
+        assert_eq!(
+            quote_desktop_exec("/tmp/a\nb\tc").unwrap(),
+            r#""/tmp/a\nb\tc""#
+        );
+    }
+
+    #[test]
+    fn desktop_exec_rejects_invalid_executable_names() {
+        assert!(quote_desktop_exec("/tmp/a=b.AppImage").is_err());
+        assert!(quote_desktop_exec("/tmp/a\0b.AppImage").is_err());
+    }
 
     #[test]
     fn normalization_rejects_unknown_choices() {

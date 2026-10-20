@@ -2,9 +2,9 @@ name: Test
 
 on:
   pull_request:
-    branches: [main, develop]
+    branches: [main]
   push:
-    branches: [main, develop]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -13,21 +13,49 @@ concurrency:
 
 jobs:
   unit-tests:
-    name: Unit Tests
+    name: Unit Tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20.10.0', '20', '22', '24']
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
+
+      - name: Install SQLite fallback for Node 20
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
 
       - run: npm ci
 
       - run: npm run typecheck
 
       - run: npm test
+
+      - run: npm run build
+
+      - name: Verify the packaged CLI starts on this runtime
+        run: |
+          node bin/tokendash.js --version
+          node -e "require('./dist/electron-server.cjs'); require('./dist/daemon.cjs')"
+
+  macos:
+    name: macOS (Swift)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift tests
+        working-directory: TokenDashSwift
+        run: swift test
+
+      - name: Release build
+        working-directory: TokenDashSwift
+        run: swift build -c release
 
   e2e-tests:
     name: E2E Tests

@@ -7,13 +7,11 @@ const mocks = vi.hoisted(() => ({
   statSync: vi.fn(),
 }));
 
-vi.mock('node:sqlite', () => ({
-  DatabaseSync: function MockDatabaseSync() {
-    return {
-      prepare: (sql: string) => (sql.includes('sqlite_master') ? { get: mocks.prepareGet } : { all: mocks.prepareAll }),
-      close: mocks.close,
-    };
-  },
+vi.mock('../../server/sqliteReader.js', () => ({
+  openSqliteReader: () => ({
+    all: (sql: string) => sql.includes('sqlite_master') ? [mocks.prepareGet()] : mocks.prepareAll(),
+    close: mocks.close,
+  }),
 }));
 vi.mock('node:fs', () => ({
   existsSync: vi.fn(() => true),
