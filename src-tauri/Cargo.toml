@@ -1,7 +1,7 @@
 [package]
 name = "tokendash-desktop"
-version = "1.9.1"
-description = "TokenDash desktop tray app for Linux"
+version = "1.10.0"
+description = "TokenDash desktop tray app for Linux and Windows"
 authors = ["TokenDash"]
 edition = "2021"
 rust-version = "1.82"

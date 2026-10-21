@@ -2,6 +2,7 @@
 //! describes the whole desktop experience and survives reinstalls.
 
 use std::fs;
+#[cfg(not(windows))]
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,7 @@ pub fn save(settings: &DesktopSettings) -> Result<DesktopSettings, String> {
 // Launch at login (XDG autostart)
 // ---------------------------------------------------------------------------
 
+#[cfg(not(windows))]
 fn autostart_path() -> PathBuf {
     paths::home_dir()
         .join(".config")
@@ -90,6 +92,7 @@ fn autostart_path() -> PathBuf {
 /// The executable to relaunch. AppImages run from a temporary mount, so the
 /// original `$APPIMAGE` path has to win over the process path.
 pub fn launch_exec() -> String {
+    #[cfg(not(windows))]
     if let Some(appimage) = std::env::var_os("APPIMAGE") {
         return appimage.to_string_lossy().into_owned();
     }
@@ -101,6 +104,7 @@ pub fn launch_exec() -> String {
 /// Desktop entries decode string escapes before parsing Exec quoting. Escape
 /// each layer separately so the executable remains one literal argument.
 /// https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html
+#[cfg(any(not(windows), test))]
 fn quote_desktop_exec(executable: &str) -> Result<String, String> {
     if executable.contains(['=', '\0']) {
         return Err("自启程序路径不能包含等号或 NUL 字符".to_string());
@@ -124,6 +128,7 @@ fn quote_desktop_exec(executable: &str) -> Result<String, String> {
         .replace('\t', "\\t"))
 }
 
+#[cfg(not(windows))]
 pub fn apply_autostart(enabled: bool) -> Result<(), String> {
     let path = autostart_path();
     if enabled {
@@ -151,13 +156,77 @@ pub fn apply_autostart(enabled: bool) -> Result<(), String> {
     }
 }
 
+#[cfg(not(windows))]
 pub fn is_autostart_enabled() -> bool {
     autostart_path().exists()
+}
+
+/// Run values are command lines, not shell expressions; quote exactly one
+/// executable and reject values Windows cannot represent safely.
+#[cfg(any(windows, test))]
+fn windows_run_value(executable: &str) -> Result<String, String> {
+    if executable.contains(['"', '\0', '\r', '\n']) || executable.encode_utf16().count() + 2 > 260 {
+        return Err("Windows 自启路径无效或超过 260 字符".to_string());
+    }
+    Ok(format!("\"{executable}\""))
+}
+
+#[cfg(windows)]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+#[cfg(windows)]
+pub fn apply_autostart(enabled: bool) -> Result<(), String> {
+    if !enabled && !is_autostart_enabled() {
+        return Ok(());
+    }
+    let mut command = paths::command("reg.exe");
+    if enabled {
+        command.args([
+            "add",
+            RUN_KEY,
+            "/v",
+            "TokenDash",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &windows_run_value(&launch_exec())?,
+            "/f",
+        ]);
+    } else {
+        command.args(["delete", RUN_KEY, "/v", "TokenDash", "/f"]);
+    }
+    let result = command
+        .output()
+        .map_err(|error| format!("无法更新 Windows 自启设置：{error}"))?;
+    if !result.status.success() {
+        return Err("无法更新 Windows 自启设置".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn is_autostart_enabled() -> bool {
+    paths::command("reg.exe")
+        .args(["query", RUN_KEY, "/v", "TokenDash"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_run_command_preserves_spaces_unicode_and_shell_characters() {
+        assert_eq!(
+            windows_run_value(r"C:\Users\用户\My Apps & Tools\TokenDash.exe").unwrap(),
+            r#""C:\Users\用户\My Apps & Tools\TokenDash.exe""#
+        );
+        assert!(windows_run_value("bad\"name.exe").is_err());
+        assert!(windows_run_value("a\0b").is_err());
+        assert!(windows_run_value(&"x".repeat(259)).is_err());
+    }
 
     #[test]
     fn desktop_exec_quotes_paths_with_spaces_and_reserved_characters() {

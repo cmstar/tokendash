@@ -41,19 +41,7 @@ chmod +x "$APP_MACOS/$APP_NAME"
 cp "$REPO_ROOT/resources/icon.icns" "$APP_RESOURCES/TokenDash.icns"
 # Copy Node.js server dist into Resources/server/
 SERVER_DIR="$APP_RESOURCES/server"
-mkdir -p "$SERVER_DIR"
-cp -R "$DIST_DIR" "$SERVER_DIR/dist"
-
-# Install only the runtime dependencies the daemon needs (express + zod)
-# The web client is pre-built in dist/client/ and doesn't need react/recharts at runtime
-echo "   Installing minimal runtime dependencies..."
-cd "$SERVER_DIR"
-npm init -y --silent 2>/dev/null
-npm install express zod --production --no-package-lock --silent 2>/dev/null
-cd "$REPO_ROOT"
-
-# Copy package.json for version info
-cp "$REPO_ROOT/package.json" "$SERVER_DIR/package.json"
+node "$REPO_ROOT/scripts/stage-server.mjs" "$SERVER_DIR"
 
 # Embed Sparkle.framework (auto-update). SwiftPM links it but doesn't place it
 # in the bundle; copy from the checkout with its symlink structure preserved.

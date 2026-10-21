@@ -106,6 +106,9 @@ pub fn update_usage(app: &AppHandle, totals: Option<TodayTotals>) {
         }
     }
     let label = badge::summary_label(tokens, cost);
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(format!("TokenDash · {label}")));
+    }
     if let Some(handles) = app.try_state::<TrayHandles>() {
         if let Err(error) = handles.summary.set_text(label) {
             eprintln!("[tokendash] 无法更新托盘摘要：{error}");

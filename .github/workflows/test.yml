@@ -21,6 +21,8 @@ jobs:
         node: ['20.10.0', '20', '22', '24']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -48,6 +50,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Swift tests
         working-directory: TokenDashSwift
@@ -62,6 +66,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -83,6 +89,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       # Tauri's Linux build deps: webkit2gtk for the webview, appindicator for
       # the tray, librsvg for icon rasterization at bundle time.
@@ -129,6 +137,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Install system dependencies
         run: |
@@ -157,9 +167,72 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
 
+      - name: Stage versioned Linux release artifacts
+        run: node scripts/stage-desktop-artifacts.mjs linux
+
       - uses: actions/upload-artifact@v4
         with:
           name: tokendash-linux
-          path: |
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          path: release/ci-linux/*
+
+
+  windows-bundle:
+    name: Windows (NSIS, Rust and installed-app smoke)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Build Windows x64 installer
+        run: npm run build:windows
+
+      - name: Check Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        working-directory: src-tauri
+        run: cargo clippy --release --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: Rust tests on Windows
+        working-directory: src-tauri
+        run: cargo test --release --target x86_64-pc-windows-msvc
+
+      - name: Install and smoke-test the packaged desktop
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe'
+          if ($installer.Count -ne 1) { throw 'Expected one NSIS installer' }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)" }
+          $executable = Join-Path $env:LOCALAPPDATA 'TokenDash/tokendash-desktop.exe'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          ./scripts/test-windows-desktop.ps1 -Executable $executable -ExpectedVersion $version
+
+      - name: Stage versioned Windows release artifacts
+        run: node scripts/stage-desktop-artifacts.mjs windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tokendash-windows
+          if-no-files-found: error
+          path: release/ci-windows/*

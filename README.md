@@ -15,7 +15,7 @@
   [![Test](https://img.shields.io/github/actions/workflow/status/zhangferry/tokendash/test.yml?branch=main&style=flat-square&label=tests)](https://github.com/zhangferry/tokendash/actions/workflows/test.yml)
   [![License](https://img.shields.io/github/license/zhangferry/tokendash?style=flat-square)](LICENSE)
 
-  [Download for macOS](https://github.com/zhangferry/tokendash/releases/latest) · [Download for Ubuntu](https://github.com/zhangferry/tokendash/releases/latest) · [Run with npx](#run-the-web-dashboard) · [Features](#what-you-get) · [Development](#development)
+  [Download for macOS](https://github.com/zhangferry/tokendash/releases/latest) · [Download for Ubuntu](https://github.com/zhangferry/tokendash/releases/latest) · [Download for Windows](https://github.com/zhangferry/tokendash/releases/latest) · [Run with npx](#run-the-web-dashboard) · [Features](#what-you-get) · [Development](#development)
 </div>
 
 ![TokenDash menu bar app and web dashboard](resources/readme-hero.png)
@@ -65,6 +65,12 @@ A native tray app for Linux ships as a `.deb` and an AppImage, built with Tauri 
 The tray uses the AppIndicator API, so GNOME needs the **ubuntu-appindicators** extension (preinstalled on Ubuntu). Because AppIndicator does not deliver icon-click events, open the popover panel from the tray menu (right-click the icon, then **打开面板**). The app bundles the dashboard server but not Node.js: install Node.js 20.10 or later (system package, nvm, fnm, or asdf) so the tray can run it. The app skips incompatible system runtimes when looking for Node.js. With Node.js 20, also install the `sqlite3` command (`sudo apt install sqlite3`) to read OpenCode data; recent Node.js 22 and Node.js 24 use their built-in SQLite support.
 
 The popover panel mirrors the macOS menu bar app: today's tokens, cost, and cache rate; an hourly activity chart with 1D/3H/15M ranges; model and token-type usage; the seven-day trend; and coding-plan quota status. The panel is borderless and frameless — drag it by its header to move it, and it stays open until you dismiss it from the tray menu or press Escape. Panel settings (launch at login, background refresh interval, appearance, low-quota alerts, and API credentials) live under the panel's **Settings** entry and are shared with the tray process.
+
+### Install on Windows
+
+Download `TokenDash-<version>-windows-x64-setup.exe` from the [latest release](https://github.com/zhangferry/tokendash/releases/latest) and run the per-user installer on Windows 10/11 x64. Install Node.js 20.10 or later first; Node.js 22/24 is recommended, and the installer provisions Microsoft WebView2 if it is missing. The installer is currently unsigned, so Windows may show a publisher/SmartScreen warning.
+
+Open TokenDash from the Start menu. The system tray provides the usage panel, dashboard, settings and quit action; Windows uses a compact tray icon with token totals in its tooltip/menu. Settings and data live in `%USERPROFILE%\.tokendash`. Launch at login is per user and is removed during uninstall. With Node.js 20, reading OpenCode data additionally requires `sqlite3` on PATH; other agents do not need it.
 
 ### Run the Web Dashboard
 
@@ -195,12 +201,13 @@ Common commands:
 | `npm run build:swift` | Build the native macOS app |
 | `npm run build:dmg` | Package the macOS app and DMG |
 | `npm run build:linux` | Package the Ubuntu deb and AppImage |
+| `npm run build:windows` | Package the Windows x64 NSIS installer (on Windows) |
 | `npm run dev:tauri` | Run the Ubuntu tray app against the dev servers |
 | `npm run typecheck` | Type-check the server and frontend |
 | `npm test` | Run Vitest unit tests |
 | `npm run test:e2e` | Run Playwright end-to-end tests |
 
-The web client uses React, TypeScript, Tailwind CSS, Recharts, and Vite. The local server uses Express and Zod. The macOS app is built with SwiftUI and Sparkle. The Ubuntu tray app is built with Tauri 2 and reuses the same web client for its popover panel.
+The web client uses React, TypeScript, Tailwind CSS, Recharts, and Vite. The local server uses Express and Zod. The macOS app is built with SwiftUI and Sparkle. The Linux and Windows tray apps are built with Tauri 2 and reuses the same web client for its popover panel.
 
 ## Contributing
 
@@ -214,7 +221,7 @@ npm test
 npm run test:e2e
 ```
 
-If you touched the Ubuntu tray app under `src-tauri/`, also run the Rust gates the CI enforces:
+If you touched the Linux/Windows tray app under `src-tauri/`, also run the Rust gates the CI enforces:
 
 ```bash
 cd src-tauri

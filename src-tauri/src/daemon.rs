@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -139,7 +139,7 @@ pub async fn ensure_started(app: &AppHandle) -> Result<u16, String> {
     cleanup_files();
     paths::ensure_data_dir().map_err(|error| format!("无法创建数据目录：{error}"))?;
 
-    let mut child = Command::new(&node)
+    let mut child = paths::command(&node)
         .arg(&state.daemon_script)
         .args(["--port", &DEFAULT_PORT.to_string()])
         .stdin(Stdio::null())
@@ -221,7 +221,9 @@ pub fn stop(app: &AppHandle) {
         terminate_child(&mut child);
     }
     if let Some(pid) = read_pid_file() {
-        terminate_pid(pid);
+        if is_tokendash_daemon_process(pid) {
+            terminate_pid(pid);
+        }
     }
     state.set_port(None);
     cleanup_files();
@@ -304,10 +306,20 @@ fn cleanup_incompatible_daemon() {
 }
 
 fn is_tokendash_daemon_process(pid: u32) -> bool {
-    let Ok(output) = Command::new("ps")
+    #[cfg(windows)]
+    let result = paths::command("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"),
+        ])
+        .output();
+    #[cfg(not(windows))]
+    let result = paths::command("ps")
         .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-    else {
+        .output();
+    let Ok(output) = result else {
         return false;
     };
     let command = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
@@ -315,7 +327,19 @@ fn is_tokendash_daemon_process(pid: u32) -> bool {
 }
 
 fn terminate_child(child: &mut Child) {
-    let _ = Command::new("kill")
+    #[cfg(windows)]
+    {
+        terminate_pid(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    #[cfg(not(windows))]
+    terminate_unix_child(child);
+}
+
+#[cfg(not(windows))]
+fn terminate_unix_child(child: &mut Child) {
+    let _ = paths::command("kill")
         .args(["-TERM", &child.id().to_string()])
         .status();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -329,7 +353,23 @@ fn terminate_child(child: &mut Child) {
 }
 
 fn terminate_pid(pid: u32) {
-    let _ = Command::new("kill")
+    #[cfg(windows)]
+    {
+        // /T includes parser workers; graceful Unix signals do not exist on
+        // Windows. taskkill is only used for our child or an identity checked pid.
+        let _ = paths::command("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    terminate_unix_pid(pid);
+}
+
+#[cfg(not(windows))]
+fn terminate_unix_pid(pid: u32) {
+    let _ = paths::command("kill")
         .args(["-TERM", &pid.to_string()])
         .status();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -339,7 +379,7 @@ fn terminate_pid(pid: u32) {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let _ = Command::new("kill")
+    let _ = paths::command("kill")
         .args(["-KILL", &pid.to_string()])
         .status();
 }
@@ -354,6 +394,7 @@ pub fn find_node() -> Option<PathBuf> {
     let explicit = std::env::var_os("TOKENDASH_NODE").map(PathBuf::from);
 
     let home = paths::home_dir();
+    #[cfg(not(windows))]
     let mut candidates: Vec<PathBuf> = vec![
         PathBuf::from("/usr/local/bin/node"),
         PathBuf::from("/usr/bin/node"),
@@ -363,6 +404,11 @@ pub fn find_node() -> Option<PathBuf> {
         home.join("bin/node"),
     ];
 
+    #[cfg(windows)]
+    let mut candidates =
+        windows_node_candidates(&home, |name| std::env::var_os(name).map(PathBuf::from));
+
+    #[cfg(not(windows))]
     for base in [
         home.join(".nvm").join("versions").join("node"),
         home.join(".local")
@@ -379,11 +425,57 @@ pub fn find_node() -> Option<PathBuf> {
 
     if let Some(path) = std::env::var_os("PATH") {
         for directory in std::env::split_paths(&path) {
-            candidates.push(directory.join("node"));
+            candidates.push(directory.join(if cfg!(windows) { "node.exe" } else { "node" }));
         }
     }
 
     select_node(explicit, candidates, supports_node_runtime)
+}
+
+/// Windows GUI launches cannot assume a shell has initialized nvm/fnm/Volta.
+/// Paths are assembled without invoking cmd.exe, preserving spaces and Unicode.
+#[cfg(any(windows, test))]
+fn windows_node_candidates(home: &Path, env: impl Fn(&str) -> Option<PathBuf>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for key in ["NVM_SYMLINK", "VOLTA_HOME"] {
+        if let Some(base) = env(key) {
+            candidates.push(base.join(if key == "VOLTA_HOME" {
+                "bin/node.exe"
+            } else {
+                "node.exe"
+            }));
+        }
+    }
+    for key in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(base) = env(key) {
+            candidates.push(base.join("nodejs/node.exe"));
+        }
+    }
+    candidates.push(home.join(".volta/bin/node.exe"));
+    let mut managed = vec![home.join(".nvm"), home.join(".fnm/node-versions")];
+    if let Some(base) = env("NVM_HOME") {
+        managed.push(base);
+    }
+    if let Some(base) = env("FNM_DIR") {
+        managed.push(base.join("node-versions"));
+    }
+    if let Some(base) = env("APPDATA") {
+        managed.push(base.join("nvm"));
+    }
+    if let Some(base) = env("LOCALAPPDATA") {
+        candidates.push(base.join("Volta/bin/node.exe"));
+        managed.push(base.join("fnm/node-versions"));
+        managed.push(base.join("fnm_multishells"));
+    }
+    for base in managed {
+        // Try every installed version, newest first: the newest folder can be
+        // incomplete while another installed runtime remains usable.
+        for version in version_dirs(&base) {
+            candidates.push(version.join("node.exe"));
+            candidates.push(version.join("installation/node.exe"));
+        }
+    }
+    candidates
 }
 
 fn select_node(
@@ -403,7 +495,7 @@ fn supports_node_runtime(candidate: &Path) -> bool {
     if !is_executable(candidate) {
         return false;
     }
-    let Ok(output) = Command::new(candidate).arg("--version").output() else {
+    let Ok(output) = paths::command(candidate).arg("--version").output() else {
         return false;
     };
     output.status.success() && supported_node_version(&String::from_utf8_lossy(&output.stdout))
@@ -425,18 +517,26 @@ fn supported_node_version(version: &str) -> bool {
 
 /// Highest version directory below `base` (e.g. `v22.11.0`), so an nvm user gets
 /// the newest installed runtime instead of an arbitrary one.
+#[cfg(not(windows))]
 fn latest_version_dir(base: &Path) -> Option<PathBuf> {
+    version_dirs(base).into_iter().next()
+}
+
+fn version_dirs(base: &Path) -> Vec<PathBuf> {
     let mut entries: Vec<(Vec<u64>, PathBuf)> = fs::read_dir(base)
-        .ok()?
-        .filter_map(|entry| entry.ok())
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
         .filter(|entry| entry.path().is_dir())
         .map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            (numeric_parts(&name), entry.path())
+            (
+                numeric_parts(&entry.file_name().to_string_lossy()),
+                entry.path(),
+            )
         })
         .collect();
-    entries.sort_by(|left, right| left.0.cmp(&right.0));
-    entries.pop().map(|(_, path)| path)
+    entries.sort_by(|left, right| right.0.cmp(&left.0));
+    entries.into_iter().map(|(_, path)| path).collect()
 }
 
 fn numeric_parts(name: &str) -> Vec<u64> {
@@ -509,6 +609,41 @@ fn canonicalize_lossy(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_managers_try_each_installed_version_newest_first() {
+        let root = std::env::temp_dir().join(format!(
+            "tokendash-node-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let nvm = root.join("nvm");
+        fs::create_dir_all(nvm.join("v9.0.0")).unwrap();
+        fs::create_dir_all(nvm.join("v22.0.0")).unwrap();
+        fs::create_dir_all(nvm.join("v24.0.0")).unwrap();
+        let paths = windows_node_candidates(&root, |key| (key == "NVM_HOME").then(|| nvm.clone()));
+        let selected = select_node(None, paths, |path| path == nvm.join("v22.0.0/node.exe"));
+        assert_eq!(selected, Some(nvm.join("v22.0.0/node.exe")));
+        assert_eq!(version_dirs(&nvm)[0], nvm.join("v24.0.0"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_discovery_includes_standard_and_managed_installs() {
+        let paths = windows_node_candidates(Path::new("profile"), |key| match key {
+            "ProgramFiles" => Some(PathBuf::from("program-files")),
+            "NVM_SYMLINK" => Some(PathBuf::from("nvm-current")),
+            "LOCALAPPDATA" => Some(PathBuf::from("local-app-data")),
+            _ => None,
+        });
+        assert!(paths.contains(&PathBuf::from("program-files/nodejs/node.exe")));
+        assert!(paths.contains(&PathBuf::from("nvm-current/node.exe")));
+        assert!(paths.contains(&PathBuf::from("local-app-data/Volta/bin/node.exe")));
+        assert!(paths.contains(&PathBuf::from("profile/.volta/bin/node.exe")));
+    }
 
     #[test]
     fn version_normalization_ignores_the_v_prefix() {

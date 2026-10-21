@@ -4,9 +4,7 @@
 //! deliver click events), so the panel is anchored below the top-right corner of
 //! the primary monitor — where the panel's own indicator sits.
 
-use tauri::{
-    AppHandle, Emitter, LogicalSize, Manager, Position, Size, WebviewUrl, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, Manager, Position, Size, WebviewUrl, WebviewWindowBuilder};
 
 use crate::daemon::DaemonState;
 
@@ -16,6 +14,7 @@ const DEFAULT_HEIGHT: f64 = 620.0;
 const MIN_HEIGHT: f64 = 160.0;
 const MAX_HEIGHT: f64 = 900.0;
 /// Vertical gap that clears the GNOME top bar.
+#[cfg(not(windows))]
 const PANEL_OFFSET: f64 = 32.0;
 const EDGE_MARGIN: f64 = 8.0;
 
@@ -118,6 +117,7 @@ fn create(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Anchors the panel below the top-right corner of the primary monitor.
+#[cfg(not(windows))]
 fn place(app: &AppHandle, window: &tauri::WebviewWindow) {
     let Ok(Some(monitor)) = app.primary_monitor() else {
         return;
@@ -138,16 +138,62 @@ fn place(app: &AppHandle, window: &tauri::WebviewWindow) {
     )));
 }
 
+/// Windows taskbars can sit on any edge; use the monitor work area so the
+/// panel remains above the taskbar and inside the visible desktop at any DPI.
+#[cfg(windows)]
+fn place(app: &AppHandle, window: &tauri::WebviewWindow) {
+    place_windows(app, window, DEFAULT_HEIGHT);
+}
+
+#[cfg(windows)]
+fn place_windows(app: &AppHandle, window: &tauri::WebviewWindow, logical_height: f64) {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area();
+    let margin = (EDGE_MARGIN * scale).round() as i32;
+    let width = ((POPOVER_WIDTH * scale).round() as u32)
+        .min(area.size.width.saturating_sub(2 * margin as u32));
+    let height = ((logical_height * scale).round() as u32)
+        .min(area.size.height.saturating_sub(2 * margin as u32));
+    let x = area.position.x + area.size.width as i32 - width as i32 - margin;
+    let y = area.position.y + area.size.height as i32 - height as i32 - margin;
+    let _ = window.set_size(Size::Physical(tauri::PhysicalSize::new(width, height)));
+    let _ = window.set_position(Position::Physical(tauri::PhysicalPosition::new(x, y)));
+}
+
 /// Resizes the panel to its content height while keeping the top edge fixed.
 pub fn set_content_height(app: &AppHandle, logical_height: f64) {
     let Some(window) = app.get_webview_window(POPOVER_LABEL) else {
         return;
     };
+    if !logical_height.is_finite() {
+        return;
+    }
     let height = logical_height.clamp(MIN_HEIGHT, MAX_HEIGHT);
+    #[cfg(windows)]
+    {
+        place_windows(app, &window, height);
+    }
+    #[cfg(not(windows))]
+    resize_from_top(&window, height);
+}
+
+#[cfg(not(windows))]
+fn resize_from_top(window: &tauri::WebviewWindow, height: f64) {
     let Ok(current) = window.outer_position() else {
         return;
     };
-    if let Err(error) = window.set_size(Size::Logical(LogicalSize::new(POPOVER_WIDTH, height))) {
+    if let Err(error) = window.set_size(Size::Logical(tauri::LogicalSize::new(
+        POPOVER_WIDTH,
+        height,
+    ))) {
         eprintln!("[tokendash] 无法调整面板高度：{error}");
         return;
     }

@@ -1,4 +1,4 @@
-//! TokenDash desktop shell for Linux: tray badge, popover window and the local
+//! TokenDash desktop shell for Linux and Windows: tray badge, popover window and the local
 //! daemon that serves both the popover page and the web dashboard.
 
 mod badge;
@@ -249,14 +249,30 @@ fn set_popover_height(app: AppHandle, height: f64) {
 
 #[tauri::command]
 fn notify(title: String, body: String) {
-    // Best effort: desktop notifications go through notify-send, which ships
-    // with Ubuntu desktops but is not a hard requirement of this app.
-    if let Err(error) = std::process::Command::new("notify-send")
+    #[cfg(not(windows))]
+    if let Err(error) = paths::command("notify-send")
         .args(["-a", "TokenDash", &title, &body])
         .status()
     {
         eprintln!("[tokendash] 无法发送桌面通知：{error}");
     }
+    #[cfg(windows)]
+    std::thread::spawn(move || {
+        // Balloon notifications need no elevated privileges or extra plugin.
+        // Data travels through environment variables, never PowerShell source.
+        let script = r#"Add-Type -AssemblyName System.Windows.Forms
+$icon = New-Object System.Windows.Forms.NotifyIcon
+$icon.Icon = [System.Drawing.SystemIcons]::Information
+$icon.Visible = $true
+$icon.ShowBalloonTip(5000, $env:TOKENDASH_NOTICE_TITLE, $env:TOKENDASH_NOTICE_BODY, [System.Windows.Forms.ToolTipIcon]::Info)
+Start-Sleep -Seconds 6
+$icon.Dispose()"#;
+        let _ = paths::command("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .env("TOKENDASH_NOTICE_TITLE", title)
+            .env("TOKENDASH_NOTICE_BODY", body)
+            .status();
+    });
 }
 
 #[tauri::command]

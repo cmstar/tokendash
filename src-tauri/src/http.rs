@@ -13,6 +13,8 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new(port: u16, timeout: Duration) -> Result<Self, String> {
         let client = reqwest::Client::builder()
+            // Local daemon traffic must bypass system HTTP proxy settings.
+            .no_proxy()
             .timeout(timeout)
             .build()
             .map_err(|error| format!("无法创建 HTTP 客户端：{error}"))?;

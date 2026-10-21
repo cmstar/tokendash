@@ -78,6 +78,19 @@ fn font_candidates() -> Vec<PathBuf> {
     if let Some(custom) = std::env::var_os("TOKENDASH_BADGE_FONT") {
         return vec![PathBuf::from(custom)];
     }
+    #[cfg(windows)]
+    {
+        std::env::var_os("WINDIR")
+            .map(PathBuf::from)
+            .map(|base| {
+                vec![
+                    base.join("Fonts/consolab.ttf"),
+                    base.join("Fonts/segoeuib.ttf"),
+                ]
+            })
+            .unwrap_or_default()
+    }
+    #[cfg(not(windows))]
     [
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf",
@@ -131,14 +144,22 @@ pub fn render_badge(tokens: Option<u64>) -> Option<RgbaImage> {
     let gap = 4.5 * RENDER_SCALE;
     let pad_right = 7.0 * RENDER_SCALE;
     let font = load_font();
-    let label = tokens.map(format_tokens);
+    // Windows fixes notification-area icons to a square. Keep the glyph
+    // readable and expose the full number in the tooltip and menu.
+    let label = if cfg!(windows) {
+        None
+    } else {
+        tokens.map(format_tokens)
+    };
 
     let text_width = match (&font, &label) {
         (Some(font), Some(label)) => measure(font, font_size, label),
         _ => 0.0,
     };
 
-    let width = if font.is_some() && label.is_some() {
+    let width = if cfg!(windows) {
+        height
+    } else if font.is_some() && label.is_some() {
         pad_left + glyph_width + gap + text_width + pad_right
     } else if font.is_some() {
         // No data yet: keep the chip minimal so the panel does not jump around.
@@ -157,7 +178,11 @@ pub fn render_badge(tokens: Option<u64>) -> Option<RgbaImage> {
         1.0,
     );
 
-    let glyph_box_x = pad_left;
+    let glyph_box_x = if cfg!(windows) {
+        (height - glyph_width) / 2.0
+    } else {
+        pad_left
+    };
     let glyph_box_y = (height - glyph_width) / 2.0;
     draw_pulse(
         &mut canvas,
@@ -404,7 +429,7 @@ mod tests {
     #[test]
     fn badge_has_visible_pixels_and_sane_proportions() {
         let badge = render_badge(Some(1_200_000)).expect("badge renders");
-        assert!(badge.width > badge.height);
+        assert!(badge.width >= badge.height);
         assert!(badge.height >= 40, "rendered at 2x for HiDPI panels");
         let opaque = badge.rgba.chunks(4).filter(|pixel| pixel[3] > 200).count();
         assert!(opaque > 200, "badge must contain the filled chip");

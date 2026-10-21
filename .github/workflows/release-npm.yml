@@ -1,38 +1,85 @@
 name: Release npm package
 
-# Publishes @zhangferry-dev/tokendash to npm via Trusted Publishing (OIDC) —
-# no npm tokens, no OTP. Bound in the package's npm Settings → Trusted
-# Publishing to this repository and this workflow file.
-#
-# Note: triggered by tag pushes only. workflow_dispatch runs fail npm's
-# trusted-publisher identity check (npm validates the calling workflow, and
-# a manual dispatch does not carry the tag-push context it expects).
+# Keep this filename and tag-push entry point: npm Trusted Publishing is bound
+# to this repository and release-npm.yml. The local unified deploy stages every
+# desktop asset in a draft release before pushing the immutable release tag.
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: read
-  id-token: write   # required for npm OIDC trusted publishing
+  contents: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
-      # Trusted publishing needs npm >= 11.5.1; the bundled npm is older.
       - name: Upgrade npm for OIDC support
-        run: npm install -g npm@latest
+        run: npm install -g npm@11.6.2
 
-      # prepack runs the full build (vite/tsc/esbuild) before packing.
-      - name: Install dependencies
-        run: npm ci
+      - name: Validate release tag and source
+        id: identity
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
+          if (!/^\d+\.\d+\.\d+$/.test(pkg.version) || process.env.RELEASE_TAG !== `v${pkg.version}` || lock.version !== pkg.version) {
+            throw new Error('Release tag, package.json and package-lock.json must agree on a stable version');
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${pkg.version}\n`);
+          NODE
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main
 
-      - name: Publish to npm (trusted publishing)
-        run: npm publish
+      - name: Download and verify every staged desktop release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-assets"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/release-assets"
+          node scripts/release-artifacts.mjs verify --dir "$RUNNER_TEMP/release-assets" --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+
+      - name: Install SQLite regression-test dependency
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Install and validate npm package
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Pack once and publish the verified npm tarball
+        env:
+          RELEASE_VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          npm pack --ignore-scripts --json > "$RUNNER_TEMP/npm-pack.json"
+          TARBALL=$(node -e 'const p=require(process.argv[1]); if(p.length!==1 || !p[0].filename) throw Error("Expected one npm tarball"); process.stdout.write(p[0].filename)' "$RUNNER_TEMP/npm-pack.json")
+          node scripts/publish-release.mjs --tarball "$TARBALL" --version "$RELEASE_VERSION"
+
+      # If this fails after npm succeeds, rerun this workflow. The helper resumes
+      # only when the existing npm version has exactly the same tarball bytes.
+      - name: Publish the complete GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
