@@ -1,10 +1,13 @@
 export interface ModelBreakdown {
+  totalTokens?: number;
   modelName: string;
   inputTokens: number;
   outputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cost: number;
+  /** 估算的 token 数（provider 未返回 usage，由消息内容推得），其余为真实上报值 */
+  estimatedTokens: number;
 }
 
 export interface DailyEntry {
@@ -17,6 +20,8 @@ export interface DailyEntry {
   totalCost: number;
   modelsUsed: string[];
   modelBreakdowns: ModelBreakdown[];
+  /** 当日 totalTokens 中来自估算的部分 */
+  estimatedTokens: number;
 }
 
 export interface Totals {
@@ -26,6 +31,8 @@ export interface Totals {
   cacheReadTokens: number;
   totalTokens: number;
   totalCost: number;
+  /** totalTokens 中来自估算的部分 */
+  estimatedTokens: number;
 }
 
 export interface DailyResponse {
@@ -128,6 +135,7 @@ export interface CodexSettingsResponse {
 }
 
 export interface AppSettingsResponse {
+  billing?: { exchangeRate: number };
   codex: CodexSettingsResponse;
 }
 
@@ -230,6 +238,8 @@ export interface SessionAnalyticsCapabilities {
 }
 
 export interface SessionAnalyticsSummary {
+  totalTokens?: number;
+  totalCost?: number;
   sessionCount: number;
   llmCallCount: number;
   skillCallCount?: number;

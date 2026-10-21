@@ -26,3 +26,10 @@ electron/trayBadge.js
 electron/trayHelper
 release/
 TokenDashSwift/.build/
+src-tauri/target/
+src-tauri/gen/
+# 图标是构建输入（tauri.conf 的 bundle.icon），要提交
+!src-tauri/icons/*.png
+.qmd/
+tmp/
+docs/wiki/

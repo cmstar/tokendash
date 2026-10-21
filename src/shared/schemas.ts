@@ -1,12 +1,14 @@
 import { z } from 'zod';
 
 export const ModelBreakdownSchema = z.object({
+  totalTokens: z.number().optional(),
   modelName: z.string(),
   inputTokens: z.number().default(0),
   outputTokens: z.number().default(0),
   cacheCreationTokens: z.number().default(0),
   cacheReadTokens: z.number().default(0),
   cost: z.number().default(0),
+  estimatedTokens: z.number().min(0).default(0),
 });
 
 export const DailyEntrySchema = z.object({
@@ -19,6 +21,7 @@ export const DailyEntrySchema = z.object({
   totalCost: z.number().default(0),
   modelsUsed: z.array(z.string()).default([]),
   modelBreakdowns: z.array(ModelBreakdownSchema).default([]),
+  estimatedTokens: z.number().min(0).default(0),
 });
 
 export const TotalsSchema = z.object({
@@ -28,6 +31,7 @@ export const TotalsSchema = z.object({
   cacheReadTokens: z.number().default(0),
   totalTokens: z.number().default(0),
   totalCost: z.number().default(0),
+  estimatedTokens: z.number().min(0).default(0),
 });
 
 export const DailyResponseSchema = z.object({
@@ -131,6 +135,7 @@ const CodexSettingsResponseSchema = z.object({
 });
 
 export const AppSettingsResponseSchema = z.object({
+  billing: z.object({ exchangeRate: z.number().positive().finite() }).optional(),
   codex: CodexSettingsResponseSchema,
 });
 
@@ -217,6 +222,8 @@ export const SessionDetailSchema = z.object({
 
 const SessionAnalyticsResponseSchema = z.object({
   summary: z.object({
+    totalTokens: z.number().optional(),
+    totalCost: z.number().optional(),
     sessionCount: z.number().default(0),
     llmCallCount: z.number().default(0),
     skillCallCount: z.number().optional(),

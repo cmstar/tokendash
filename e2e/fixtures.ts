@@ -64,7 +64,9 @@ function makeDailyEntry(date: string, models: string[], seed: number): DailyEntr
       cacheCreationTokens: 0,
       cacheReadTokens: perModel(totalCacheRead),
       cost: 0,
+      estimatedTokens: 0,
     })),
+    estimatedTokens: 0,
   };
 }
 

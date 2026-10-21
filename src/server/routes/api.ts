@@ -11,7 +11,7 @@ import { quotaService } from '../quota/index.js';
 import type { QuotaProviderId } from '../quota/index.js';
 import { cache } from '../cache.js';
 import { getCodexDataPathStatuses, getCustomCodexDataPaths, getEnvironmentCodexDataPaths, getOfficialCodexDataPaths } from '../codexDataSources.js';
-import { updateCodexCustomDataPaths } from '../appSettings.js';
+import { updateCodexCustomDataPaths, readAppSettings, writeAppSettings } from '../appSettings.js';
 import { validateAppSettings } from '../../shared/schemas.js';
 
 async function getQuota(_req: Request, res: Response): Promise<void> {
@@ -57,6 +57,7 @@ export interface AppInfo {
 
 function buildSettingsResponse() {
   return validateAppSettings({
+    billing: { exchangeRate: readAppSettings().billing?.exchangeRate ?? 6 },
     codex: {
       officialDataPaths: getOfficialCodexDataPaths(),
       environmentDataPaths: getEnvironmentCodexDataPaths(),
@@ -124,6 +125,20 @@ function getAppInfo(info: AppInfo): (_req: Request, res: Response) => void {
 }
 
 export function registerApiRoutes(router: Router, appInfo: AppInfo): void {
+  router.put('/settings/billing', (req, res) => {
+    const rate = req.body?.exchangeRate;
+    if (typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) {
+      res.status(400).json({ error: '汇率必须是大于零的有限数值' });
+      return;
+    }
+    try {
+      writeAppSettings({ ...readAppSettings(), billing: { exchangeRate: rate } });
+      cache.clear();
+      res.json(buildSettingsResponse());
+    } catch (failure) {
+      res.status(500).json({ error: failure instanceof Error ? failure.message : '汇率保存失败' });
+    }
+  });
   router.get('/app-info', getAppInfo(appInfo));
   router.get('/agents', getAgents);
   router.get('/settings', getSettings);

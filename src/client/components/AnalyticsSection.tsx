@@ -84,7 +84,7 @@ interface AnalyticsSectionProps {
 export function AnalyticsSection({ analytics, timeRange }: AnalyticsSectionProps) {
   const { codeChangeTrend, toolCallTrend } = analytics;
 
-  const filteredChanges = useMemo(() => filterByDate(codeChangeTrend, timeRange), [codeChangeTrend, timeRange]);
+  const filteredChanges = useMemo(() => filterByDate(codeChangeTrend, timeRange).filter(day => day.linesAdded + day.linesDeleted > 0), [codeChangeTrend, timeRange]);
   const filteredToolTrend = useMemo(() => filterByDate(toolCallTrend, timeRange), [toolCallTrend, timeRange]);
 
   // Get top 6 tools for the trend chart
@@ -115,7 +115,7 @@ export function AnalyticsSection({ analytics, timeRange }: AnalyticsSectionProps
     <>
       {/* Code Change Trend + Tool Call Trend */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-        <Panel title="Code Change Trend" subtitle="Lines added, deleted, and net change">
+        {filteredChanges.length > 0 && <Panel title="Code Change Trend" subtitle="Lines added, deleted, and net change">
           {filteredChanges.length > 0 ? (
             <ResponsiveContainer width="100%" height={240}>
               <AreaChart data={filteredChanges}>
@@ -146,9 +146,9 @@ export function AnalyticsSection({ analytics, timeRange }: AnalyticsSectionProps
           ) : (
             <p className="text-stone-400 text-[13px] py-8 text-center">No code change data available</p>
           )}
-        </Panel>
+        </Panel>}
 
-        <Panel title="Tool Call Trend" subtitle="Daily usage frequency by tool">
+        {filteredToolTrend.length > 0 && <Panel title="Tool Call Trend" subtitle="Daily usage frequency by tool">
           {filteredToolTrend.length > 0 ? (
             <ResponsiveContainer width="100%" height={240}>
               <LineChart data={filteredToolTrend}>
@@ -179,7 +179,7 @@ export function AnalyticsSection({ analytics, timeRange }: AnalyticsSectionProps
           ) : (
             <p className="text-stone-400 text-[13px] py-8 text-center">No tool call trend data available</p>
           )}
-        </Panel>
+        </Panel>}
       </div>
     </>
   );

@@ -1,3 +1,4 @@
+import { getPricingExchangeRate } from '../shared/modelPricing.js';
 import { readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -65,6 +66,7 @@ export interface AggregateOptions {
 }
 
 interface TokenAccumulator {
+  costUSD: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -151,7 +153,7 @@ function chooseCodexUsageEvent(
 }
 
 function withLongContextUsage(ev: ParsedTokenEvent): ParsedTokenEvent {
-  if (!isLongContextCodexRequest(ev.inputTokens)) return ev;
+  if (!isLongContextCodexRequest(ev.inputTokens, ev.model)) return ev;
   return {
     ...ev,
     longContextInputTokens: ev.inputTokens,
@@ -426,7 +428,7 @@ export function deduplicateParsedSessions(sessions: ParsedSession[]): ParsedSess
 function loadIndexedSessions(): { sessions: ParsedSession[]; signature: string } {
   const result = buildUsageFileIndex<ParsedSession | null, { path: string }>({
     cacheName: 'codex-sessions',
-    parserVersion: CODEX_INDEX_VERSION,
+    parserVersion: `${CODEX_INDEX_VERSION}:pricing-v3:${getPricingExchangeRate()}`,
     files: scanCodexSessions().map(path => ({ path })),
     parseFile: file => parseCodexSession(file.path),
   });
@@ -541,6 +543,7 @@ function extractProjectName(cwd: string): string {
 
 function emptyAcc(): TokenAccumulator {
   return {
+    costUSD: 0,
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
@@ -552,7 +555,8 @@ function emptyAcc(): TokenAccumulator {
   };
 }
 
-function addAcc(a: TokenAccumulator, ev: ParsedTokenEvent): void {
+function addAcc(a: TokenAccumulator, ev: ParsedTokenEvent, model: string): void {
+  a.costUSD += calculateCost(ev, new Set([model]));
   a.inputTokens += ev.inputTokens;
   a.cachedInputTokens += ev.cachedInputTokens;
   a.outputTokens += ev.outputTokens;
@@ -571,6 +575,7 @@ function displayAcc(acc: TokenAccumulator): TokenAccumulator {
 }
 
 function mergeAcc(a: TokenAccumulator, b: TokenAccumulator): void {
+  a.costUSD += b.costUSD;
   a.inputTokens += b.inputTokens;
   a.cachedInputTokens += b.cachedInputTokens;
   a.outputTokens += b.outputTokens;
@@ -582,11 +587,11 @@ function mergeAcc(a: TokenAccumulator, b: TokenAccumulator): void {
 }
 
 function addAccToBucket(bucket: AggregateBucket, ev: ParsedTokenEvent, model: string): void {
-  addAcc(bucket.acc, ev);
+  addAcc(bucket.acc, ev, model);
   if (!model) return;
   const normalizedModel = normalizeCodexModelName(model);
   if (!bucket.models.has(normalizedModel)) bucket.models.set(normalizedModel, emptyAcc());
-  addAcc(bucket.models.get(normalizedModel)!, ev);
+  addAcc(bucket.models.get(normalizedModel)!, ev, normalizedModel);
 }
 
 function emptySerializedBucket(): SerializedAggregateBucket {
@@ -599,11 +604,11 @@ function bucketFor(map: Record<string, SerializedAggregateBucket>, key: string):
 }
 
 function addAccToSerializedBucket(bucket: SerializedAggregateBucket, ev: ParsedTokenEvent, model: string): void {
-  addAcc(bucket.acc, ev);
+  addAcc(bucket.acc, ev, model);
   if (!model) return;
   const normalizedModel = normalizeCodexModelName(model);
   if (!bucket.models[normalizedModel]) bucket.models[normalizedModel] = emptyAcc();
-  addAcc(bucket.models[normalizedModel], ev);
+  addAcc(bucket.models[normalizedModel], ev, normalizedModel);
 }
 
 function mergeSerializedBucket(target: SerializedAggregateBucket, source: SerializedAggregateBucket): void {
@@ -644,6 +649,7 @@ function accToEntry(date: string, acc: TokenAccumulator, modelAccs: Map<string, 
     totalCost,
     modelsUsed: modelNames,
     modelBreakdowns,
+    estimatedTokens: 0,
   };
 }
 
@@ -656,7 +662,8 @@ function buildModelBreakdowns(modelAccs: Map<string, TokenAccumulator>): ModelBr
       outputTokens: display.outputTokens,
       cacheCreationTokens: 0,
       cacheReadTokens: display.cachedInputTokens,
-      cost: calculateCost(acc, new Set([modelName])),
+      cost: acc.costUSD,
+      estimatedTokens: 0,
     };
   });
 }
@@ -746,6 +753,7 @@ function buildDailyResponseFromSummaries(summaries: CodexFileAggregate[]): Daily
       cacheReadTokens: totalsAcc.cachedInputTokens,
       totalTokens: totalsAcc.totalTokens,
       totalCost,
+      estimatedTokens: 0,
     },
   };
 }
@@ -888,6 +896,7 @@ function buildDailyResponse(sessions: ParsedSession[], options?: Partial<Aggrega
       cacheReadTokens: totalsAcc.cachedInputTokens,
       totalTokens: totalsAcc.totalTokens,
       totalCost,
+      estimatedTokens: 0,
     },
   };
 }

@@ -1,0 +1,35 @@
+[package]
+name = "tokendash-desktop"
+version = "1.10.0"
+description = "TokenDash desktop tray app for Linux and Windows"
+authors = ["TokenDash"]
+edition = "2021"
+rust-version = "1.82"
+
+# The library is what the binary and the integration tests link against; the
+# binary target stays a thin shell so `cargo test` can exercise pure logic.
+[lib]
+name = "tokendash_desktop_lib"
+crate-type = ["lib"]
+
+[[bin]]
+name = "tokendash-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["time"] }
+ab_glyph = "0.2"
+open = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

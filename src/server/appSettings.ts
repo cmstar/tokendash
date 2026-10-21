@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { setPricingExchangeRate } from '../shared/modelPricing.js';
 
 export interface AppSettings {
+  billing?: { exchangeRate: number };
   codex: {
     customDataPaths: string[];
   };
@@ -50,6 +52,7 @@ export function readAppSettings(): AppSettings {
     if (!existsSync(path)) return DEFAULT_SETTINGS;
     const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<AppSettings>;
     return {
+      billing: { exchangeRate: raw.billing?.exchangeRate ?? 6 },
       codex: {
         customDataPaths: normalizeDataPathList(raw.codex?.customDataPaths ?? []),
       },
@@ -62,6 +65,7 @@ export function readAppSettings(): AppSettings {
 /** Persist TokenDash server settings atomically enough for small local JSON files. */
 export function writeAppSettings(settings: AppSettings): AppSettings {
   const normalized: AppSettings = {
+    billing: { exchangeRate: settings.billing?.exchangeRate ?? 6 },
     codex: {
       customDataPaths: normalizeDataPathList(settings.codex.customDataPaths),
     },
@@ -69,8 +73,11 @@ export function writeAppSettings(settings: AppSettings): AppSettings {
   const path = settingsFilePath();
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+  setPricingExchangeRate(normalized.billing!.exchangeRate);
   return normalized;
 }
+
+setPricingExchangeRate(readAppSettings().billing?.exchangeRate ?? 6);
 
 /** Replace the custom Codex-compatible data paths stored in TokenDash settings. */
 export function updateCodexCustomDataPaths(paths: string[]): AppSettings {

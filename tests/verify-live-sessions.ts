@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import { getSessionAnalytics, getSessionDetail, extractSessionToolCalls } from '../src/server/sessionAnalyticsParser.js';
+
+const results = [];
+for (const agent of ['opencode', 'pi']) {
+  const data = getSessionAnalytics(agent, { range: 'all', limit: 100 });
+  assert.ok(data.summary.sessionCount > 0, `${agent} 缺少真实会话`);
+  assert.ok(data.llmCallTrend.length > 0, `${agent} 缺少真实 LLM 事件`);
+  assert.ok((data.toolDistribution?.length ?? 0) > 0, `${agent} 缺少真实工具事件`);
+  const selected = data.sessions.find(session => session.status === 'complete' && (session.toolCallCount ?? 0) > 0 && (session.userTurnCount ?? 0) > 0);
+  assert.ok(selected);
+  const detail = getSessionDetail(agent, selected.id, undefined, true);
+  assert.ok(detail);
+  assert.equal(detail.session.llmCallCount, detail.events.filter(event => event.type === 'llm_call').length);
+  assert.equal(detail.session.toolCallCount, detail.events.filter(event => event.type === 'tool_call').length);
+  assert.ok(detail.events.some(event => event.type === 'user_message' && event.content));
+  assert.ok(detail.events.some(event => event.type === 'tool_result' && event.content));
+  assert.ok(detail.events.some(event => event.type === 'assistant_message' && event.content));
+  const metadata = getSessionDetail(agent, selected.id);
+  assert.ok(metadata?.events.every(event => event.content === undefined));
+  const toolCalls = extractSessionToolCalls(agent);
+  const edits = toolCalls.filter(call => call.linesAdded + call.linesDeleted > 0);
+  results.push({ agent, sessions: data.summary.sessionCount, llmCalls: data.summary.llmCallCount, tools: data.summary.toolCallCount, skills: data.summary.skillCallCount, openedEvents: detail.events.length, readableEvents: detail.events.filter(event => event.content).length, edits: edits.length });
+}
+const all = getSessionAnalytics('all', { range: 'all', limit: 100 });
+assert.ok(all.summary.sessionCount > 0);
+assert.ok(all.sessions.some(session => session.id.startsWith('pi::') || session.id.startsWith('opencode::')));
+const selected = all.sessions.find(session => session.id.startsWith('pi::') || session.id.startsWith('opencode::'))!;
+assert.ok(getSessionDetail('all', selected.id));
+assert.ok((all.summary.totalTokens ?? 0) > 0);
+assert.ok((all.summary.totalCost ?? 0) > 0);
+const firstPage = getSessionAnalytics('all', { range: 'all', limit: 2 });
+assert.equal(firstPage.sessions.length, 2);
+assert.ok(firstPage.pagination.nextCursor);
+const secondPage = getSessionAnalytics('all', { range: 'all', limit: 2, cursor: firstPage.pagination.nextCursor });
+assert.ok(secondPage.sessions.every(session => !firstPage.sessions.some(first => first.id === session.id)));
+const query = getSessionAnalytics('all', { range: 'all', query: selected.id });
+assert.ok(query.sessions.some(session => session.id === selected.id));
+const filtered = getSessionAnalytics('all', { range: 'all', model: selected.models[0], status: selected.status });
+assert.ok(filtered.sessions.every(session => session.models.includes(selected.models[0]) && session.status === selected.status));
+if (selected.project) assert.ok(getSessionAnalytics('all', { range: 'all', project: selected.project }).sessions.every(session => session.project === selected.project));
+const today = getSessionAnalytics('all', { range: 'today' });
+assert.equal(today.summary.llmCallCount, today.llmCallTrend.reduce((sum, day) => sum + day.total, 0));
+console.log(JSON.stringify({ sources: results, allSessions: all.summary.sessionCount, allLlmCalls: all.summary.llmCallCount, todayLlmCalls: today.summary.llmCallCount, paginationVerified: true, filtersVerified: true, allDetailVerified: true }, null, 2));

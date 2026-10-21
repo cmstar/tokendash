@@ -9,7 +9,7 @@ import { buildUsageFileIndex } from './usageFileIndex.js';
 // Types
 // ---------------------------------------------------------------------------
 
-interface ToolCallRecord {
+export interface ToolCallRecord {
   toolName: string;       // normalized name
   timestamp: number;      // ms epoch
   filePath?: string;
@@ -59,6 +59,7 @@ export function normalizeToolName(name: string): string {
   }
   const mapping: Record<string, string> = {
     'exec': 'Bash',
+    'shell': 'Bash',
     'read': 'Read',
     'edit': 'Edit',
     'write': 'Write',
@@ -73,6 +74,16 @@ export function normalizeToolName(name: string): string {
 function countLines(text: string): number {
   if (!text) return 0;
   return text.split('\n').length;
+}
+
+export function structuredToolCall(name: string, input: Record<string, unknown>, timestamp: string, failed = false): ToolCallRecord {
+  const toolName = normalizeToolName(name);
+  const text = (value: unknown) => typeof value === 'string' ? value : '';
+  const filePath = text(input.file_path ?? input.path ?? input.filePath);
+  const edits = Array.isArray(input.edits) ? input.edits as Record<string, unknown>[] : [input];
+  const linesDeleted = !failed && toolName === 'Edit' ? edits.reduce((sum, edit) => sum + countLines(text(edit.old_string ?? edit.oldText ?? edit.oldString)), 0) : 0;
+  const linesAdded = failed ? 0 : toolName === 'Write' ? countLines(text(input.content)) : toolName === 'Edit' ? edits.reduce((sum, edit) => sum + countLines(text(edit.new_string ?? edit.newText ?? edit.newString)), 0) : 0;
+  return { toolName, timestamp: Date.parse(timestamp), ...(filePath ? { filePath } : {}), linesAdded, linesDeleted };
 }
 
 // ---------------------------------------------------------------------------

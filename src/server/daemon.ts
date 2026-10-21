@@ -125,7 +125,9 @@ async function main() {
   killStaleDaemon();
 
   const preferredPort = resolvePort();
-  const distDir = join(import.meta.url.replace('file://', ''), '..');
+  // fileURLToPath decodes the percent-escapes an URL keeps in non-ASCII paths;
+  // stripping the scheme by hand would leave the dashboard directory unusable.
+  const distDir = join(fileURLToPath(import.meta.url), '..');
 
   const app = createApp(preferredPort, distDir);
   const { server, port } = await listenWithFallback(app, preferredPort);

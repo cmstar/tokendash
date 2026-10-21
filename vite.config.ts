@@ -8,6 +8,12 @@ export default defineConfig({
   build: {
     outDir: 'dist/client',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        index: 'index.html',
+        menubar: 'menubar.html',
+      },
+    },
   },
   server: {
     proxy: {

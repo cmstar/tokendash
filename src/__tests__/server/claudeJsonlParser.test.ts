@@ -10,16 +10,14 @@ describe('calculateCost', () => {
   });
 
   it('calculates opus cost correctly', () => {
-    // Opus: $15/M input, $1.50/M cache read, $75/M output
+    // Opus 4.6 使用已核实的每百万输入 5 美元、输出 25 美元。
     const cost = calculateCost(1_000_000, 0, 1_000_000, 'claude-opus-4-6');
-    // input: 1M * $15 = $15, output: 1M * $75 = $75 → $90
-    expect(cost).toBeCloseTo(90, 2);
+    expect(cost).toBeCloseTo(30, 2);
   });
 
-  it('uses default pricing for unknown models', () => {
-    // Default = sonnet pricing: $3/M input, $0.30/M cache, $15/M output
+  it('不为未知模型套用 Sonnet 价格', () => {
     const cost = calculateCost(1_000_000, 0, 1_000_000, 'some-future-model');
-    expect(cost).toBeCloseTo(18, 2);
+    expect(cost).toBe(0);
   });
 
   it('charges cache read at reduced rate', () => {

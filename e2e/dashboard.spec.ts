@@ -211,10 +211,10 @@ test.describe('Codex data-source settings', () => {
   test('opens custom path settings and saves configured sources', async ({ page }) => {
     await setupPage(page);
     const settingsRequest = page.waitForResponse(response => response.url().includes('/api/settings') && response.request().method() === 'GET');
-    await page.locator('button[aria-label="Configure Codex data sources"]').click();
+    await page.locator('button[aria-label="设置"]').click();
     await settingsRequest;
 
-    await expect(page.locator('text=Codex data sources')).toBeVisible();
+    await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
     await expect(page.locator('text=Multiple paths are supported')).toBeVisible();
     await expect(page.locator('textarea')).toHaveValue('/Users/test/.custom-codex');
 
@@ -345,11 +345,10 @@ test.describe('Agent switching', () => {
     await expect(page.getByRole('menuitemradio', { name: 'OpenClaw' })).not.toBeVisible();
   });
 
-  test('hides agent switcher when only one agent available', async ({ page }) => {
+  test('仅一个来源时仍可切换到所有 Agent', async ({ page }) => {
     await setupPage(page, { agents: ['claude'] });
 
-    // No agent buttons should be visible at all
-    await expect(page.locator('button:has-text("Claude Code")')).not.toBeVisible();
+    await expect(page.locator('button:has-text("Claude Code")')).toBeVisible();
     await expect(page.locator('button:has-text("OpenCode")')).not.toBeVisible();
     await expect(page.locator('button:has-text("Codex")')).not.toBeVisible();
     await expect(page.locator('button:has-text("OpenClaw")')).not.toBeVisible();
@@ -626,7 +625,7 @@ test.describe('Error handling', () => {
   test('no console errors on load', async ({ page }) => {
     const errors: string[] = [];
     page.on('console', msg => {
-      if (msg.type() === 'error') errors.push(msg.text());
+      if (msg.type() === 'error') errors.push(`${msg.text()} (${msg.location().url})`);
     });
 
     await setupPage(page);

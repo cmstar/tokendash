@@ -51,6 +51,10 @@ export function useSessionAnalytics(filters: SessionAnalyticsFilters, refreshVer
   }, [agent, project, range, model, status, debouncedQuery, cursor]);
 
   useEffect(() => { void load(refreshVersion > 0); }, [load, refreshVersion]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { void load(false); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
   useEffect(() => () => controllerRef.current?.abort(), []);
 
   const nextPage = useCallback(() => {

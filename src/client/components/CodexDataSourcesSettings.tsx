@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { fetchSettings, updateCodexDataPaths } from '../api/client.js';
+import { fetchSettings, updateCodexDataPaths, updateBillingExchangeRate } from '../api/client.js';
+import { useCurrency } from '../hooks/useCurrency.js';
 import type { AppSettingsResponse, CodexDataPathStatus } from '../../shared/types.js';
 
 interface CodexDataSourcesSettingsProps {
@@ -23,6 +24,8 @@ function sourceLabel(kind: CodexDataPathStatus['kind']): string {
 
 /** Modal for configuring extra Codex-compatible data sources. */
 export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSourcesSettingsProps) {
+  const { currency, setCurrency, exchangeRate, setExchangeRate } = useCurrency();
+  const [rateDraft, setRateDraft] = useState(String(exchangeRate));
   const [settings, setSettings] = useState<AppSettingsResponse | null>(null);
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(false);
@@ -39,6 +42,7 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
     fetchSettings()
       .then(next => {
         setSettings(next);
+        setRateDraft(String(next.billing?.exchangeRate ?? exchangeRate));
         setDraft(next.codex.customDataPaths.join('\n'));
       })
       .catch(err => setError(err instanceof Error ? err.message : 'Failed to load settings'))
@@ -67,13 +71,13 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-stone-950/30 px-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Codex data source settings">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-stone-950/30 px-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Settings">
       <div className="w-full max-w-2xl rounded-2xl bg-white shadow-[0_24px_80px_rgba(28,25,23,0.22)] border border-stone-200/70">
         <div className="flex items-start justify-between gap-4 border-b border-stone-100 px-6 py-5">
           <div>
-            <h2 className="text-lg font-extrabold tracking-tight text-stone-900">Codex data sources</h2>
+            <h2 className="text-lg font-extrabold tracking-tight text-stone-900">设置</h2>
             <p className="mt-1 text-[13px] font-medium leading-relaxed text-stone-500">
-              TokenDash scans official Codex data by default. Add one or more compatible custom homes for non-official clients.
+              设置金额显示、人民币汇率与 Codex 数据源。数据源默认扫描官方 Codex 目录。
             </p>
           </div>
           <button
@@ -91,6 +95,23 @@ export function CodexDataSourcesSettings({ open, onClose, onSaved }: CodexDataSo
             <div className="flex h-48 items-center justify-center text-[13px] font-medium text-stone-400">Loading settings…</div>
           ) : (
             <div className="space-y-5">
+              <div className="rounded-xl border border-stone-200 p-3 space-y-2">
+                <label className="flex justify-between text-sm">显示币种
+                  <select aria-label="显示币种" value={currency} onChange={event => setCurrency(event.target.value as 'USD' | 'CNY')}>
+                    <option value="USD">美元 USD</option><option value="CNY">人民币 CNY</option>
+                  </select>
+                </label>
+                <label className="flex justify-between text-sm">1 USD 对应人民币
+                  <input aria-label="人民币汇率" type="number" min="0.0001" step="0.01" value={rateDraft} onChange={event => { setRateDraft(event.target.value); setSaved(false); }} className="w-24 border rounded px-2" />
+                </label>
+                <button type="button" disabled={saving || !Number.isFinite(Number(rateDraft)) || Number(rateDraft) <= 0} onClick={async () => {
+                  setSaving(true); setError(null); setSaved(false);
+                  try { const next = await updateBillingExchangeRate(Number(rateDraft)); setExchangeRate(next.billing!.exchangeRate); setSaved(true); onSaved(); }
+                  catch (failure) { setError(failure instanceof Error ? failure.message : '汇率保存失败'); }
+                  finally { setSaving(false); }
+                }} className="text-sm text-indigo-600 disabled:opacity-40">保存汇率</button>
+                <p className="text-xs text-stone-500">币种保存在浏览器，汇率保存在服务端设置。AMAX 单价以人民币保存，按此汇率换算。汇率不是实时数据。</p>
+              </div>
               <div>
                 <label className="text-[12px] font-bold uppercase tracking-wider text-stone-400">Custom paths</label>
                 <textarea

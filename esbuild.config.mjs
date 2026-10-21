@@ -28,4 +28,5 @@ await build({
   ...shared,
   entryPoints: ['src/server/daemon.ts'],
   outfile: 'dist/daemon.cjs',
+  define: { ...shared.define, '__TOKENDASH_DAEMON_BUNDLE__': 'true' },
 });

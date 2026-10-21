@@ -1,4 +1,6 @@
 import type { MetricMode } from '../../shared/types.js';
+import { formatTokens } from '../utils/formatters.js';
+import { useCurrency } from '../hooks/useCurrency.js';
 
 interface CustomTooltipProps {
   active?: boolean;
@@ -8,6 +10,7 @@ interface CustomTooltipProps {
 }
 
 export function CustomTooltip({ active, payload, label, mode }: CustomTooltipProps) {
+  const { formatCost } = useCurrency();
   if (!active || !payload || !label) {
     return null;
   }
@@ -58,7 +61,7 @@ export function CustomTooltip({ active, payload, label, mode }: CustomTooltipPro
                 color: '#111827',
                 fontSize: '13px'
               }}>
-                {mode === 'usd' ? `$${entry.value.toFixed(2)}` : entry.value.toLocaleString()}
+                {mode === 'usd' ? formatCost(entry.value) : formatTokens(entry.value)}
               </td>
             </tr>
           ))}

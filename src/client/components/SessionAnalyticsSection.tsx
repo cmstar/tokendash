@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { fetchSessionDetail } from '../api/client.js';
 import { useSessionAnalytics } from '../hooks/useSessionAnalytics.js';
-import { formatDate, formatProjectName, formatTokens, formatUSD } from '../utils/formatters.js';
+import { formatDate, formatProjectName, formatTokens } from '../utils/formatters.js';
 import type { SessionDetail, SessionEvent, SessionSummary } from '../../shared/types.js';
 
 const COLORS = ['#4f46e5', '#0ea5e9', '#f59e0b', '#ec4899', '#10b981', '#8b5cf6'];
@@ -335,11 +335,17 @@ function DetailDialog({ agent, session, onClose, restoreFocus }: { agent: string
 }
 
 export function SessionAnalyticsSection({ agent, project, range, refreshVersion }: { agent: string; project: string; range: string; refreshVersion: number }) {
-  const state = useSessionAnalytics({ agent, project, range }, refreshVersion);
+  const [modelFilter, setModelFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const state = useSessionAnalytics({ agent, project, range, model: modelFilter, status: statusFilter }, refreshVersion);
   const [selected, setSelected] = useState<SessionSummary | null>(null);
   const openerRef = useRef<HTMLTableRowElement | null>(null);
   const data = state.data;
   const capabilities = data?.capabilities;
+  useEffect(() => {
+    if (!modelFilter && data) setAvailableModels([...new Set(data.llmCallTrend.flatMap(day => Object.keys(day.models)))].sort());
+  }, [data, modelFilter]);
   const llmTrendData = useMemo(() => (data?.llmCallTrend || []).map(entry => ({ date: entry.date, ...entry.models })), [data?.llmCallTrend]);
   const models = useMemo(() => (data?.llmCallTrend || []).reduce<string[]>((all, day) => {
     Object.keys(day.models).forEach(key => { if (!all.includes(key)) all.push(key); }); return all;
@@ -371,29 +377,37 @@ export function SessionAnalyticsSection({ agent, project, range, refreshVersion 
   const summary = data.summary;
   const available = (key: keyof NonNullable<typeof capabilities>) => Boolean(capabilities?.[key]);
   return <section className="space-y-4" aria-label="Session analytics">
-    <div className="flex items-center justify-between gap-4"><div><h2 className="text-xl font-bold tracking-tight text-stone-900">Session analytics</h2><p className="mt-1 text-[12px] font-medium text-stone-400">{summary.sessionCount.toLocaleString()} sessions indexed{state.loading ? ' · Updating' : ''}</p></div><span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-500">Local metadata only</span></div>
-    <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5" data-od-id="session-kpi-row">
+    <div className="flex items-center justify-between gap-4"><div><h2 className="text-xl font-bold tracking-tight text-stone-900">Session analytics</h2><p className="mt-1 text-[12px] font-medium text-stone-400">{summary.sessionCount.toLocaleString()} sessions indexed{state.loading ? ' · Updating' : ''}</p></div><span className="rounded-full bg-stone-100 px-2.5 py-1 text-[10px] font-semibold text-stone-500">本地真实记录</span></div>
+    {state.error && <div role="alert" className="rounded-xl bg-rose-50 p-3 text-sm text-rose-700">{state.error}<button onClick={state.retry} disabled={state.loading} className="ml-3 underline">重试</button></div>}
+    <div className="flex flex-wrap items-center gap-3 rounded-xl bg-white p-3 text-xs">
+      <label>模型 <select aria-label="会话模型" value={modelFilter} onChange={event => setModelFilter(event.target.value)} className="ml-2 rounded border border-stone-200 p-1.5"><option value="">所有模型</option>{availableModels.map(model => <option key={model} value={model}>{model}</option>)}</select></label>
+      <label>状态 <select aria-label="会话状态" value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="ml-2 rounded border border-stone-200 p-1.5"><option value="">所有状态</option><option value="active">进行中</option><option value="complete">已完成</option><option value="interrupted">已中断</option><option value="unknown">未知</option></select></label>
+      {(modelFilter || statusFilter || state.query) && <button type="button" onClick={() => { setModelFilter(''); setStatusFilter(''); state.setQuery(''); }} className="text-indigo-600">清除会话筛选</button>}
+      <span className="text-stone-400">按本期事件统计；打开详情可查看完整会话</span>
+    </div>
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4" data-od-id="session-kpi-row">
+      {summary.toolSuccessRate !== undefined && <KpiCard label="Tool success rate" value={summary.toolSuccessRate.toFixed(1) + '%'} detail="仅统计原始记录明确给出成功或失败的结果" />}
       <KpiCard label="Total sessions" value={summary.sessionCount.toLocaleString()} detail="In the selected period" accent />
       <KpiCard label="LLM calls" value={summary.llmCallCount.toLocaleString()} detail={`${summary.sessionCount ? (summary.llmCallCount / summary.sessionCount).toFixed(1) : '0'} calls per session`} />
-      <KpiCard label="Tool calls" value={<CapabilityValue value={(summary.toolCallCount ?? 0).toLocaleString()} available={hasToolCalls} unavailable="Not available for this agent" />} detail={hasToolCalls ? 'Recognized tool events' : 'Not available for this agent'} />
-      <KpiCard label="Avg. session duration" value={formatDuration(summary.avgDurationMs)} detail={summary.medianDurationMs !== undefined ? `Median ${formatDuration(summary.medianDurationMs)}` : 'Completed sessions only'} />
-      <KpiCard label={derivedSkills ? 'Skill uses' : 'Skill calls'} value={<CapabilityValue value={(summary.skillCallCount ?? 0).toLocaleString()} available={hasSkills} unavailable="Not available for this agent" />} detail={hasSkills ? inferredSkills ? 'Inferred from SKILL.md reads' : mixedSkills ? 'Explicit and inferred usage' : 'Explicit Skill invocations' : 'Not available for this agent'} />
+      {(summary.toolCallCount ?? 0) > 0 && <KpiCard label="Tool calls" value={<CapabilityValue value={(summary.toolCallCount ?? 0).toLocaleString()} available={hasToolCalls} unavailable="Not available for this agent" />} detail={hasToolCalls ? 'Recognized tool events' : 'Not available for this agent'} />}
+      {summary.avgDurationMs !== undefined && <KpiCard label="Avg. session duration" value={formatDuration(summary.avgDurationMs)} detail={summary.medianDurationMs !== undefined ? `Median ${formatDuration(summary.medianDurationMs)}` : 'Completed sessions only'} />}
+      {(summary.skillCallCount ?? 0) > 0 && <KpiCard label={derivedSkills ? 'Skill uses' : 'Skill calls'} value={<CapabilityValue value={(summary.skillCallCount ?? 0).toLocaleString()} available={hasSkills} unavailable="Not available for this agent" />} detail={hasSkills ? inferredSkills ? 'Inferred from SKILL.md reads' : mixedSkills ? 'Explicit and inferred usage' : 'Explicit Skill invocations' : 'Not available for this agent'} />}
     </div>
     <div className="grid gap-4 lg:grid-cols-2" data-od-id="session-charts-primary">
-      <ChartPanel anchor="llm-call-trend" title="LLM call trend" subtitle="Daily model calls across completed and active sessions" note="calls / day">
+      {llmTrendData.length > 0 && <ChartPanel anchor="llm-call-trend" title="LLM call trend" subtitle="Daily model calls across completed and active sessions" note="calls / day">
         <ResponsiveContainer width="100%" height={250}><BarChart data={llmTrendData}><CartesianGrid stroke="#e8e6e1" vertical={false} /><XAxis dataKey="date" axisLine={false} tickLine={false} /><YAxis allowDecimals={false} axisLine={false} tickLine={false} /><Tooltip content={<SessionTooltip />} /><Legend wrapperStyle={{ fontSize: 11, paddingTop: 12 }} />{models.map((model, index) => <Bar key={model} dataKey={model} stackId="calls" fill={COLORS[index]} fillOpacity={0.85} radius={index === models.length - 1 ? [4, 4, 0, 0] : undefined} />)}</BarChart></ResponsiveContainer>
-      </ChartPanel>
-      <ChartPanel anchor="tool-call-distribution" title="Tool call distribution" subtitle="Bash, MCP, TaskUpdate, and other local tools" note={`${summary.toolCallCount ?? 0} total`}>
+      </ChartPanel>}
+      {distribution.length > 0 && <ChartPanel anchor="tool-call-distribution" title="Tool call distribution" subtitle="Bash, MCP, TaskUpdate, and other local tools" note={`${summary.toolCallCount ?? 0} total`}>
         {hasToolCalls ? <div className="min-w-0 space-y-4 pt-1">{distribution.map((entry, index) => { const max = Math.max(...distribution.map(item => item.count), 1); return <div key={entry.name} className="group grid min-w-0 grid-cols-[minmax(96px,120px)_minmax(0,1fr)_36px] items-center gap-3 text-[11px]" title={`${entry.name}: ${entry.count}`}><span className="truncate font-medium text-stone-600">{entry.name}</span><div className="min-w-0 overflow-hidden"><div className="h-2 w-full rounded-full bg-stone-100"><div className="h-full max-w-full rounded-full transition-all" style={{ width: `${Math.min(100, (entry.count / max) * 100)}%`, backgroundColor: COLORS[index % COLORS.length] }} /></div></div><span className="text-right font-mono text-stone-700">{entry.count}</span></div>; })}</div> : <div className="flex h-[250px] items-center justify-center rounded-xl bg-stone-50 px-8 text-center text-sm text-stone-400">Tool calls are not available from this agent’s local logs.</div>}
-      </ChartPanel>
+      </ChartPanel>}
     </div>
     <div className="grid gap-4 lg:grid-cols-2" data-od-id="session-charts-secondary">
-      <ChartPanel anchor="session-duration-trend" title="Session duration & turns" subtitle="Average session length and conversation volume by day" note="selected range">
+      {durationTrendData.some(day => day.avgDurationMinutes !== undefined || day.avgUserTurns !== undefined) && <ChartPanel anchor="session-duration-trend" title="Session duration & turns" subtitle="Average session length and conversation volume by day" note="selected range">
         <ResponsiveContainer width="100%" height={250}><LineChart data={durationTrendData}><CartesianGrid stroke="#e8e6e1" vertical={false} /><XAxis dataKey="date" axisLine={false} tickLine={false} /><YAxis yAxisId="duration" tickFormatter={(v: number) => `${v}m`} axisLine={false} tickLine={false} /><YAxis yAxisId="turns" orientation="right" hide={!available('userTurns')} axisLine={false} tickLine={false} /><Tooltip /><Legend wrapperStyle={{ fontSize: 11, paddingTop: 12 }} /><Line yAxisId="duration" type="monotone" dataKey="avgDurationMinutes" name="Avg. duration" stroke="#4f46e5" strokeWidth={2.5} dot={false} />{available('userTurns') && <Line yAxisId="turns" type="monotone" dataKey="avgUserTurns" name="Avg. turns / session" stroke="#10b981" strokeWidth={2} strokeDasharray="4 3" dot={false} />}</LineChart></ResponsiveContainer>
-      </ChartPanel>
-      <ChartPanel anchor="skill-usage" title="Skill usage" subtitle={inferredSkills ? 'Conservatively inferred from process-level SKILL.md reads' : mixedSkills ? 'Explicit calls combined with conservative process inference' : 'Explicit Skill invocations in the selected period'} note={hasSkills ? `${summary.skillCallCount ?? 0} total${inferredSkills ? ' · inferred' : mixedSkills ? ' · mixed' : ''}` : 'unavailable'}>
+      </ChartPanel>}
+      {(data.skillDistribution?.length ?? 0) > 0 && <ChartPanel anchor="skill-usage" title="Skill usage" subtitle={inferredSkills ? 'Conservatively inferred from process-level SKILL.md reads' : mixedSkills ? 'Explicit calls combined with conservative process inference' : 'Explicit Skill invocations in the selected period'} note={hasSkills ? `${summary.skillCallCount ?? 0} total${inferredSkills ? ' · inferred' : mixedSkills ? ' · mixed' : ''}` : 'unavailable'}>
         {hasSkills ? <><div className="mb-4 flex items-center rounded-xl border border-emerald-100 bg-emerald-50/60 px-4 py-3"><div><p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700/70">{derivedSkills ? 'Total skill uses' : 'Total skill calls'}</p><p className="mt-0.5 font-mono text-base font-bold text-emerald-700">{(summary.skillCallCount ?? 0).toLocaleString()}</p></div><span className="mx-5 h-8 w-px bg-emerald-200" /><div><p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700/70">Distinct skills</p><p className="mt-0.5 font-mono text-base font-bold text-emerald-700">{(data.skillDistribution || []).length}</p></div></div><ResponsiveContainer width="100%" height={180}><BarChart data={data.skillDistribution || []}><CartesianGrid stroke="#e8e6e1" vertical={false} /><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10 }} /><YAxis allowDecimals={false} axisLine={false} tickLine={false} /><Tooltip content={<SessionTooltip />} /><Bar dataKey="count" name={derivedSkills ? 'Uses' : 'Calls'} fill="#4f46e5" fillOpacity={0.82} radius={[5, 5, 0, 0]}>{(data.skillDistribution || []).map((_, index) => <Cell key={index} fill={COLORS[index % COLORS.length]} />)}</Bar></BarChart></ResponsiveContainer></> : <div className="flex h-[250px] items-center justify-center rounded-xl bg-stone-50 px-8 text-center text-sm text-stone-400">Skill calls are not available from this agent’s local logs.</div>}
-      </ChartPanel>
+      </ChartPanel>}
     </div>
     <article className={PANEL} data-od-id="session-detail-table"><div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-start"><div><h3 className="text-[15px] font-semibold tracking-tight text-stone-900">Session detail</h3><p className="mt-1 text-[12px] font-medium text-stone-400">Open a session to inspect its model, skill, tool, and output event sequence.</p></div><input value={state.query} onChange={event => state.setQuery(event.target.value)} aria-label="Search sessions" placeholder="Search session ID or project" className="h-8 w-full rounded-lg border border-stone-200 px-3 text-[12px] outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 sm:w-[205px]" /></div>
       <div className="overflow-x-auto">
@@ -407,7 +421,7 @@ export function SessionAnalyticsSection({ agent, project, range, refreshVersion 
         </table>
       </div>
       {data.sessions.length === 0 && <div className="py-10 text-center text-sm text-stone-400">No sessions found for this filter.</div>}
-      <div className="mt-4 flex items-center justify-between border-t border-stone-100 pt-3"><span className="text-[11px] text-stone-400">{data.pagination.totalCount === undefined ? 'Cursor pagination' : `${data.pagination.totalCount} sessions`}</span><div className="flex gap-2"><button onClick={state.previousPage} disabled={!state.hasPreviousPage} className="rounded-lg border border-stone-200 px-2.5 py-1 text-[11px] font-semibold text-stone-600 disabled:opacity-40">Previous</button><button onClick={state.nextPage} disabled={!data.pagination.nextCursor} className="rounded-lg border border-stone-200 px-2.5 py-1 text-[11px] font-semibold text-stone-600 disabled:opacity-40">Next</button></div></div>
+      <div className="mt-4 flex items-center justify-between border-t border-stone-100 pt-3"><span className="text-[11px] text-stone-400">{data.pagination.totalCount === undefined ? 'Cursor pagination' : `${data.pagination.totalCount} sessions`}</span><div className="flex gap-2"><button onClick={state.previousPage} disabled={state.loading || !state.hasPreviousPage} className="rounded-lg border border-stone-200 px-2.5 py-1 text-[11px] font-semibold text-stone-600 disabled:opacity-40">Previous</button><button onClick={state.nextPage} disabled={state.loading || !data.pagination.nextCursor} className="rounded-lg border border-stone-200 px-2.5 py-1 text-[11px] font-semibold text-stone-600 disabled:opacity-40">Next</button></div></div>
     </article>
     <p className="px-1 text-[11px] leading-relaxed text-stone-400">This tab is populated only from locally extractable session metadata and event records. Session content is loaded after an explicit user action.</p>
     {selected && <DetailDialog agent={agent} session={selected} onClose={close} restoreFocus={restoreFocus} />}

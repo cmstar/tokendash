@@ -6,10 +6,10 @@ import AppKit
 ///
 /// Refresh is driven by a three-state machine (`RefreshMode`) instead of a fixed
 /// high-frequency timer:
-/// - `.dormant`  — popover closed: cheap badge updates plus a configurable
-///                 background refresh of the popover's detail data.
-/// - `.active`   — popover open: a full refresh at most once every 30 minutes;
-///                 subsequent refreshes are manual until the interval elapses.
+/// - `.dormant`  — popover closed: fresh badge totals every 30s plus a
+///                 configurable background refresh of detail data.
+/// - `.active`   — popover open: immediate fresh detail data, then a 60s fresh
+///                 detail refresh while the user is looking at the popover.
 /// - `.suspended`— system sleep / low power: all data timers stopped.
 @MainActor class BadgeUpdater {
     private let state: AppState
@@ -18,10 +18,12 @@ import AppKit
     enum RefreshMode { case dormant, active, suspended }
     private(set) var mode: RefreshMode = .dormant
 
-    // Cadences (seconds). The badge is cache-served and stays cheap; detail data
-    // refreshes in the background at the user-selected cadence.
+    // Cadences (seconds). The badge refresh parses only changed usage files via
+    // the daemon's usage index, so it stays cheap while reflecting live agent use.
+    // Detail data also refreshes while the popover is visible.
     private let dormantInterval: TimeInterval = 30
     private let activePulseInterval: TimeInterval = 10.0
+    private let activeDetailInterval: TimeInterval
     private let backgroundFullIntervalOverride: TimeInterval?
     private var backgroundFullInterval: TimeInterval {
         backgroundFullIntervalOverride ?? SettingsStore.shared.refreshInterval.rawValue
@@ -40,6 +42,7 @@ import AppKit
 
     private var dormantTimer: Timer?
     private var pulseTimer: Timer?
+    private var activeDetailTimer: Timer?
     private var backgroundFullTimer: Timer?
     private var pendingFreshPopoverRefresh = false
 
@@ -58,13 +61,15 @@ import AppKit
         client: (any APIClientProtocol)? = nil,
         now: @escaping () -> Date = Date.init,
         backgroundFullInterval: TimeInterval? = nil,
-        popoverRefreshInterval: TimeInterval = 30 * 60
+        popoverRefreshInterval: TimeInterval = 30 * 60,
+        activeDetailInterval: TimeInterval = 60
     ) {
         self.state = state
         self.apiClient = client
         self.now = now
         self.backgroundFullIntervalOverride = backgroundFullInterval
         self.popoverRefreshInterval = popoverRefreshInterval
+        self.activeDetailInterval = activeDetailInterval
     }
 
     func start(port: Int) {
@@ -111,6 +116,7 @@ import AppKit
             Task { await self.performBadgeUpdate() }   // immediate refresh on entry
         case .active:
             Task { await self.refreshOnPopoverOpenIfNeeded() }
+            scheduleActiveDetail()
             if pulseEnabled {
                 samplePulse()  // prime a pulse baseline immediately, don't wait 10s
                 schedulePulse()
@@ -137,6 +143,14 @@ import AppKit
         pulseTimer = t
     }
 
+    private func scheduleActiveDetail() {
+        let t = Timer(timeInterval: activeDetailInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.performActiveDetailRefresh() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        activeDetailTimer = t
+    }
+
     private func scheduleBackgroundFull() {
         guard backgroundFullTimer == nil else { return }
         let t = Timer(timeInterval: backgroundFullInterval, repeats: true) { [weak self] _ in
@@ -154,6 +168,7 @@ import AppKit
     private func stopDataTimers() {
         dormantTimer?.invalidate(); dormantTimer = nil
         pulseTimer?.invalidate(); pulseTimer = nil
+        activeDetailTimer?.invalidate(); activeDetailTimer = nil
     }
 
     /// Runs the 1-minute realtime poll only while the popover is open and the
@@ -229,6 +244,14 @@ import AppKit
             forceRefresh: false, forceQuota: false, recordRefreshTime: true)
     }
 
+    /// Full detail refresh while the popover is visible. It bypasses usage caches
+    /// so live coding-agent activity is reflected without waiting for the
+    /// low-power background cadence, but quota remains cached to avoid repeated
+    /// upstream calls.
+    func performActiveDetailRefresh() async {
+        await performFullUpdate(forceRefresh: true, forceQuota: false)
+    }
+
     /// Returns true when opening the popover triggered its allowed automatic
     /// refresh. The throttle is based on the most recent full detail refresh,
     /// regardless of whether it came from a manual click, the background timer,
@@ -253,9 +276,10 @@ import AppKit
 
     // MARK: - dormant: cheap badge update (cache-served)
 
-    /// Updates only today's total tokens + cost for the menu bar badge. Served
-    /// from the daemon's 5min cache (refresh:false) so it never triggers JSONL
-    /// re-parsing. Does not touch detail state (hourly/projects/trend/quota).
+    /// Updates only today's total tokens + cost for the menu bar badge. This
+    /// bypasses the daemon response cache because the badge is the primary live
+    /// signal that coding-agent usage is still moving. The daemon usage index
+    /// reparses only changed files, and this still avoids blocks/projects/quota.
     func performBadgeUpdate() async {
         guard let api = apiClient else { return }
         do {
@@ -267,7 +291,7 @@ import AppKit
             var totalTokens = 0
             var totalCost = 0.0
             for agent in agents {
-                if let d = try? await api.getDaily(agent: agent, refresh: false) {
+                if let d = try? await api.getDaily(agent: agent, refresh: true) {
                     if let entry = d.daily.first(where: { $0.date == today }) {
                         totalTokens += entry.totalTokens
                         totalCost += entry.totalCost
