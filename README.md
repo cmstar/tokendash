@@ -51,13 +51,13 @@ TokenDash requires **macOS 14 or later**. It runs as a menu-bar-only app, so it 
 
 ### Ubuntu Desktop App
 
-A native tray app for Linux ships as a `.deb` and an AppImage, built with Tauri 2.
+A native tray app for Ubuntu 22.04 or later (amd64) ships as a `.deb` and an AppImage, built with Tauri 2 on the Ubuntu 22.04 compatibility baseline.
 
-1. Download the latest `TokenDash_..._amd64.deb` (or the AppImage) from [GitHub Releases](https://github.com/zhangferry/tokendash/releases/latest).
+1. Download the latest `TokenDash-<version>-linux-amd64.deb` (or the AppImage) from [GitHub Releases](https://github.com/zhangferry/tokendash/releases/latest).
 2. Install it:
 
    ```bash
-   sudo apt install ./TokenDash_*_amd64.deb
+   sudo apt install ./TokenDash-*-linux-amd64.deb
    ```
 
 3. Launch **TokenDash**. It starts the same local dashboard automatically and shows today's token total in the system tray.

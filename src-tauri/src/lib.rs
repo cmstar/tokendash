@@ -83,6 +83,7 @@ fn start_supervisor(app: AppHandle) {
                     break;
                 }
                 Err(message) => {
+                    daemon::record_startup_error(&message);
                     eprintln!("[tokendash] 本地服务未就绪：{message}");
                     tray::update_usage(&app, None);
                     tokio::time::sleep(START_RETRY_INTERVAL).await;

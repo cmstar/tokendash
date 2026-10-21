@@ -134,7 +134,8 @@ jobs:
 
   linux-bundle:
     name: Linux Bundle (deb + AppImage)
-    runs-on: ubuntu-latest
+    # Build against the oldest supported glibc/WebKitGTK baseline.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -159,6 +160,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: linux-ubuntu22.04
 
       # FUSE is unavailable in containers; this makes linuxdeploy unpack
       # itself instead of mounting.
@@ -199,6 +201,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-on-failure: true
 
       - run: npm ci
 

@@ -7,6 +7,7 @@
 //! name) and its dashboard entrypoint both answer.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
@@ -139,12 +140,22 @@ pub async fn ensure_started(app: &AppHandle) -> Result<u16, String> {
     cleanup_files();
     paths::ensure_data_dir().map_err(|error| format!("无法创建数据目录：{error}"))?;
 
+    // Preserve startup failures from the headless GUI launch. Recreate this
+    // small log per attempt so repeated restarts cannot grow it indefinitely.
+    let mut log = fs::File::create(paths::data_dir().join("daemon.log"))
+        .map_err(|error| format!("无法创建服务日志：{error}"))?;
+    let _ = writeln!(
+        log,
+        "node={}\nscript={}",
+        node.display(),
+        state.daemon_script.display()
+    );
     let mut child = paths::command(&node)
         .arg(&state.daemon_script)
         .args(["--port", &DEFAULT_PORT.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(log))
         .spawn()
         .map_err(|error| format!("无法启动本地服务：{error}"))?;
 
@@ -565,7 +576,7 @@ pub fn find_daemon_script(app: &AppHandle) -> (PathBuf, bool) {
     if let Ok(resource_dir) = app.path().resource_dir() {
         let packaged = resource_dir.join("server").join("dist").join("daemon.cjs");
         if packaged.is_file() {
-            return (packaged, true);
+            return (node_script_path(&packaged), true);
         }
     }
 
@@ -603,7 +614,34 @@ pub fn find_daemon_script(app: &AppHandle) -> (PathBuf, bool) {
 }
 
 fn canonicalize_lossy(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    node_script_path(&canonical)
+}
+
+/// Tauri canonicalizes its Windows resource directory to a verbatim path.
+/// Node resolves module filenames to ordinary drive/UNC paths; passing the
+/// verbatim spelling can make an argv-vs-module entrypoint check disagree.
+fn node_script_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(value) = path.to_str() {
+        return PathBuf::from(normalize_windows_script_path(value));
+    }
+    path.to_path_buf()
+}
+
+#[cfg(any(windows, test))]
+fn normalize_windows_script_path(path: &str) -> String {
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        path.strip_prefix(r"\\?\").unwrap_or(path).to_string()
+    }
+}
+
+pub fn record_startup_error(message: &str) {
+    if paths::ensure_data_dir().is_ok() {
+        let _ = fs::write(paths::data_dir().join("desktop-status.log"), message);
+    }
 }
 
 #[cfg(test)]
@@ -643,6 +681,22 @@ mod tests {
         assert!(paths.contains(&PathBuf::from("nvm-current/node.exe")));
         assert!(paths.contains(&PathBuf::from("local-app-data/Volta/bin/node.exe")));
         assert!(paths.contains(&PathBuf::from("profile/.volta/bin/node.exe")));
+    }
+
+    #[test]
+    fn windows_script_paths_match_node_module_filename_spelling() {
+        assert_eq!(
+            normalize_windows_script_path(r"\\?\C:\Users\用户\My Apps\server\dist\daemon.cjs"),
+            r"C:\Users\用户\My Apps\server\dist\daemon.cjs"
+        );
+        assert_eq!(
+            normalize_windows_script_path(r"\\?\UNC\server\share\daemon.cjs"),
+            r"\\server\share\daemon.cjs"
+        );
+        assert_eq!(
+            normalize_windows_script_path(r"C:\Apps\daemon.cjs"),
+            r"C:\Apps\daemon.cjs"
+        );
     }
 
     #[test]

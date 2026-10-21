@@ -15,11 +15,13 @@ try {
     $env:USERPROFILE = $TestHome
     # Deliberately disagree: Windows must follow USERPROFILE like Node does.
     $env:HOME = Join-Path $TestHome 'different-shell-home'
-    $env:TOKENDASH_NODE = (Get-Command node.exe).Source
+    # Exercise the normal GUI runtime discovery rather than an explicit override.
+    Remove-Item Env:TOKENDASH_NODE -ErrorAction SilentlyContinue
     $AppProcess = Start-Process -FilePath $Executable -PassThru
     $Deadline = [DateTime]::UtcNow.AddSeconds(60)
     $PortFile = Join-Path $TestHome '.tokendash/daemon.port'
     $Ready = $false
+    $LastFailure = "Waiting for daemon port file: $PortFile"
     while ([DateTime]::UtcNow -lt $Deadline) {
         $AppProcess.Refresh()
         if ($AppProcess.HasExited) { throw "Desktop exited with $($AppProcess.ExitCode) before readiness." }
@@ -36,10 +38,22 @@ try {
                 if ($null -eq $Daily.daily) { throw 'Unexpected daily API response.' }
                 $Ready = $true
                 break
-            } catch { Start-Sleep -Milliseconds 500 }
+            } catch {
+                $LastFailure = $_.Exception.Message
+                Start-Sleep -Milliseconds 500
+            }
         } else { Start-Sleep -Milliseconds 500 }
     }
-    if (!$Ready) { throw 'Installed desktop did not start its packaged daemon/dashboard within 60 seconds.' }
+    if (!$Ready) {
+        foreach ($LogName in @('desktop-status.log', 'daemon.log')) {
+            $LogPath = Join-Path $TestHome ".tokendash/$LogName"
+            if (Test-Path $LogPath) { Write-Host "${LogName}: $(Get-Content $LogPath -Raw)" }
+        }
+        $DaemonScript = Join-Path (Split-Path -Parent $Executable) 'server/dist/daemon.cjs'
+        Write-Host "Installed daemon script exists: $(Test-Path $DaemonScript); path: $DaemonScript"
+        Write-Host "Node on PATH: $((Get-Command node.exe).Source)"
+        throw "Installed desktop readiness failed within 60 seconds. Last failure: $LastFailure"
+    }
     if (Test-Path (Join-Path $env:HOME '.tokendash/daemon.port')) { throw 'Desktop used shell HOME instead of USERPROFILE.' }
     Write-Host "Windows desktop smoke passed: version $($Info.version), daemon port $DaemonPort, Unicode/spaces profile, dashboard, panel and API."
 } finally {

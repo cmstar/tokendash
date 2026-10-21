@@ -75,7 +75,7 @@ if (!run) throw new Error('No successful or running exact-commit desktop CI buil
 console.log(run.databaseId);
 NODE
 )
-gh run watch "$CI_RUN_ID" --repo "$REPO" --interval 30 --exit-status
+gh run watch "$CI_RUN_ID" --repo "$REPO" --interval 30 --compact --exit-status
 for platform in linux windows; do
     rm -rf "release/ci-$platform"
     gh run download "$CI_RUN_ID" --repo "$REPO" --name "tokendash-$platform" --dir "release/ci-$platform"
@@ -94,6 +94,18 @@ hdiutil verify "$DMG" >/dev/null
 plutil -lint release/TokenDash.app/Contents/Info.plist >/dev/null
 APP_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' release/TokenDash.app/Contents/Info.plist)
 [ "$APP_VERSION" = "$VERSION" ] || fail "macOS bundle version mismatch"
+EMBEDDED_PUBLIC_KEY=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' release/TokenDash.app/Contents/Info.plist)
+[ "$EMBEDDED_PUBLIC_KEY" = "$SPARKLE_EDDSA_PUB" ] || fail "Packaged Sparkle public key differs from the configured update key"
+DMG_FILE="$DMG" node --input-type=module <<'NODE'
+import { readFileSync } from 'node:fs';
+import { createPublicKey, verify } from 'node:crypto';
+const xml = readFileSync('release/appcast.xml', 'utf8');
+const signature = xml.match(/sparkle:edSignature="([^"]+)"/)?.[1];
+const raw = Buffer.from(process.env.SPARKLE_EDDSA_PUB, 'base64');
+if (raw.length !== 32 || !signature) throw new Error('Invalid Sparkle public key or signature');
+const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), raw]), format: 'der', type: 'spki' });
+if (!verify(null, readFileSync(process.env.DMG_FILE), key, Buffer.from(signature, 'base64'))) throw new Error('Sparkle update signature does not match the installed-app public key');
+NODE
 for platform in linux windows; do
     cp release/ci-"$platform"/* release/
 done
@@ -141,7 +153,7 @@ for attempt in $(seq 1 24); do
     sleep 5
 done
 [ -n "$PUBLISH_RUN_ID" ] || fail "Publisher did not start; retain draft/tag and inspect Actions"
-gh run watch "$PUBLISH_RUN_ID" --repo "$REPO" --interval 30 --exit-status
+gh run watch "$PUBLISH_RUN_ID" --repo "$REPO" --interval 30 --compact --exit-status
 [ "$(npm view "@zhangferry-dev/tokendash@$VERSION" version --registry "$REGISTRY")" = "$VERSION" ] || fail "npm version was not published"
 [ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" ] || fail "Release is still draft"
 step "Published $TAG with every desktop platform and npm"
