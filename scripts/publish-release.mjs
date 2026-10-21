@@ -37,6 +37,7 @@ export async function publishRelease({ tarball, packageName, version }, {
   run = runNpm,
   read = readFileSync,
   wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  log = console.log,
 } = {}) {
   if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Invalid release version: ${version}`);
   const integrity = `sha512-${createHash('sha512').update(read(tarball)).digest('base64')}`;
@@ -52,13 +53,19 @@ export async function publishRelease({ tarball, packageName, version }, {
   if (published.status !== 0) {
     throw new Error(`npm publish failed; keep the draft release and tag for retry: ${published.stderr || published.stdout}`);
   }
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  // npm scans accepted uploads before exposing them; availability commonly
+  // takes five minutes and can exceed fifteen minutes during busy periods.
+  log(`${packageName}@${version} accepted by npm; waiting up to 20 minutes for registry availability`);
+  for (let attempt = 0; attempt <= 40; attempt += 1) {
     const metadata = registryVersion(packageName, version, run);
     if (metadata) {
       if (metadata['dist.integrity'] !== integrity) throw new Error('Published npm package integrity does not match the packed tarball');
       return { integrity, published: true };
     }
-    if (attempt < 4) await wait(2000);
+    if (attempt < 40) {
+      log(`Waiting for npm scanning/availability (${attempt + 1}/40; next check in 30s)`);
+      await wait(30_000);
+    }
   }
   throw new Error('Published npm version is not visible yet; keep the draft release and tag for retry');
 }

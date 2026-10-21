@@ -94,7 +94,13 @@ and gh access; the publisher needs GitHub-hosted Node 24/npm 11.6.2 and OIDC.
 If publishing fails, retain the draft and tag for inspection. Fix a transient
 failure by rerunning the existing release workflow; never delete or move a tag.
 If the npm version already exists, resumption is permitted only when its
-`dist.integrity` exactly matches the packed tarball. Windows is currently
+`dist.integrity` exactly matches the packed tarball. npm scans accepted uploads
+before making them installable, typically taking five minutes and sometimes
+over fifteen minutes ([npm announcement](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/)).
+The publisher checks availability every 30 seconds for up to 20 minutes and
+keeps the GitHub Release as a draft until the package integrity is verified.
+If scanning takes longer, wait for availability and rerun the existing workflow;
+retain the original tag and assets. Windows is currently
 unsigned; its NSIS installer provisions WebView2 but requires Node 20.10+.
 Linux/Windows do not yet have the macOS Sparkle automatic update mechanism.
 

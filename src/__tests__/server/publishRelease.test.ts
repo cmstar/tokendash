@@ -16,7 +16,7 @@ function dependencies(results: unknown[]) {
     if (!results.length) throw new Error('Unexpected command');
     return results.shift();
   });
-  return { run, read: () => bytes, wait: vi.fn(async () => {}) };
+  return { run, read: () => bytes, wait: vi.fn(async () => {}), log: vi.fn() };
 }
 
 describe('immutable npm release publication', () => {
@@ -72,9 +72,17 @@ describe('immutable npm release publication', () => {
     await expect(publishRelease(options, deps)).rejects.toThrow('unexpected version metadata');
   });
 
+  it('waits through npm scanning beyond the former short visibility window', async () => {
+    const deps = dependencies([missing, success({}), ...Array(10).fill(missing), success(metadata())]);
+    await expect(publishRelease(options, deps)).resolves.toEqual({ integrity, published: true });
+    expect(deps.wait).toHaveBeenCalledTimes(10);
+    expect(deps.wait).toHaveBeenCalledWith(30_000);
+    expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('accepted by npm'));
+  });
+
   it('stops after bounded registry visibility retries', async () => {
-    const deps = dependencies([missing, success({}), missing, missing, missing, missing, missing]);
+    const deps = dependencies([missing, success({}), ...Array(41).fill(missing)]);
     await expect(publishRelease(options, deps)).rejects.toThrow('not visible yet');
-    expect(deps.wait).toHaveBeenCalledTimes(4);
+    expect(deps.wait).toHaveBeenCalledTimes(40);
   });
 });
