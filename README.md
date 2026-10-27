@@ -160,6 +160,94 @@ npm install -g @zhangferry-dev/tokendash
 tokendash
 ```
 
+### Install this fork or the current checkout
+
+The npm package above is published by upstream. To install the code from
+`cmstar/tokendash`, use Node.js 22 or 24 and run this from the checkout on
+**Windows, macOS, or Linux** (PowerShell, cmd.exe, Bash, and zsh use the same command):
+
+```sh
+npm run install:global
+tokendash --version
+```
+
+The installer uses Node.js built-ins, so no prior `npm install` is needed. It
+installs the locked development dependencies, builds the current source including
+uncommitted changes, packs it in a temporary directory, installs that tarball
+globally, and verifies the installed version. The result is an independent copy
+with runtime dependencies; temporary files are cleaned up on success or failure.
+If a step fails, the installer stops.
+
+To perform the installation manually, without the installer script, run these
+commands from the repository root on any of the supported platforms:
+
+```sh
+npm ci --global=false --include=dev
+npm pack --global=false
+```
+
+The `prepare` hook builds the source automatically. Install the exact `.tgz`
+filename printed by `npm pack`; for the current version, `1.10.0`, that is:
+
+```sh
+npm install -g ./zhangferry-dev-tokendash-1.10.0.tgz
+tokendash --version
+```
+
+Use the newly printed filename after a version change so an older tarball is
+not installed accidentally. Only the final tarball installation uses `-g`.
+
+To use the installer for a specific Git ref instead of the current source:
+
+```sh
+npm run install:global -- "git+https://github.com/cmstar/tokendash.git#main"
+```
+
+The selected Git branch or commit must include this fork's `prepare` build hook.
+Changes that have not been pushed are only available through the local-checkout
+method. Replace `#main` with a commit SHA to install a specific revision.
+
+Without a checkout containing the installer, use the equivalent two-step flow.
+On **macOS/Linux with Bash or zsh**:
+
+```sh
+tarball=$(npm pack --global=false --foreground-scripts=false --json \
+  "git+https://github.com/cmstar/tokendash.git#main" | \
+  node -e "let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => console.log(JSON.parse(s)[0].filename));")
+npm install -g "./$tarball"
+tokendash --version
+```
+
+On **Windows with PowerShell**:
+
+```powershell
+$packed = npm pack --global=false --foreground-scripts=false --json "git+https://github.com/cmstar/tokendash.git#main" | ConvertFrom-Json
+npm install -g ".\$($packed[0].filename)"
+tokendash --version
+```
+
+The tarball filename is read from npm's output so upgrades do not accidentally
+reuse an older version such as `1.9.0`. `--foreground-scripts=false` keeps build logs
+out of the JSON output; it does not disable the build.
+
+Source installs need a build because `dist/` is not tracked in Git. The `prepare`
+hook builds the frontend and server during dependency installation and packing;
+`prepack` alone does not cover local-directory installation. See the
+[npm lifecycle documentation](https://docs.npmjs.com/cli/v11/using-npm/scripts/#life-cycle-scripts).
+
+On Windows with npm 11.16.0, direct `npm install -g <git-url>` was observed to
+propagate global-install settings into Git dependency preparation, replace the
+package with a link to npm's temporary clone, and leave a broken command when
+that clone was removed. The installer and two-step commands above keep source preparation
+local with `--global=false` and apply `-g` only to the finished tarball. Do not
+use `--ignore-scripts` while preparing the source.
+
+`npm install -g .` instead links the current checkout. Install its dependencies
+first and keep the checkout and its `node_modules` in place, or use the tarball
+method above for an independent installation.
+
+### Options
+
 Available options:
 
 ```text
@@ -198,6 +286,7 @@ Common commands:
 | --- | --- |
 | `npm run dev` | Start the Express and Vite development servers |
 | `npm run build` | Build the web client and server |
+| `npm run install:global` | Build, pack, and install the checkout globally on Windows, macOS, or Linux |
 | `npm run build:swift` | Build the native macOS app |
 | `npm run build:dmg` | Package the macOS app and DMG |
 | `npm run build:linux` | Package the Ubuntu deb and AppImage |

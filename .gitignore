@@ -1,15 +1,9 @@
 node_modules
 dist
-.env
-.env.*
-!.env.example
-.DS_Store
-.omc
-.omx
-.npmrc
+# Ignore untracked dotfiles and dot-directories at any depth.
+# Files already tracked by Git remain tracked.
+.*
 *.tgz
-.claude/
-.playwright-mcp/
 test-results/
 *.png
 resources/
@@ -18,18 +12,15 @@ resources/*
 !resources/icon.png
 !resources/icon-1024.png
 !resources/readme-hero.png
-.wolf/
 CLAUDE.md
 main.js
 electron/main.js
 electron/trayBadge.js
 electron/trayHelper
 release/
-TokenDashSwift/.build/
 src-tauri/target/
 src-tauri/gen/
 # 图标是构建输入（tauri.conf 的 bundle.icon），要提交
 !src-tauri/icons/*.png
-.qmd/
 tmp/
 docs/wiki/
