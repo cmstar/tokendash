@@ -246,6 +246,23 @@ use `--ignore-scripts` while preparing the source.
 first and keep the checkout and its `node_modules` in place, or use the tarball
 method above for an independent installation.
 
+### Codex history and caching
+
+Codex history statistics include both `.jsonl` and Zstandard-compressed
+`.jsonl.zst` rollouts in the configured live and archived session directories.
+New `token_usage_record` responses take precedence over their legacy
+`token_count` status events; inherited subagent history is excluded from the
+child's usage. Older sessions continue to use the legacy events.
+
+Parsed usage and session metadata are persisted under
+`~/.tokendash/usage-index-v1/` (or `TOKENDASH_USAGE_INDEX_DIR`). The first scan
+after this parser upgrade rebuilds the indexes; subsequent starts reuse
+unchanged files and process only new or modified rollouts. Compressed history
+is decoded in memory, without creating uncompressed copies in the Codex home.
+Session bodies are read on demand when opening full content. Node.js 20 remains
+supported through a bundled JavaScript Zstandard decoder; newer runtimes use
+native decoding when available. No system `zstd` command is required.
+
 ### Options
 
 Available options:

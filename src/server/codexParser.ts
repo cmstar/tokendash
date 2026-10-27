@@ -1,5 +1,5 @@
 import { getPricingExchangeRate } from '../shared/modelPricing.js';
-import { readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
+import { readdirSync, statSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { DailyEntry, DailyResponse, ProjectsResponse, BlockEntry, BlocksResponse, ModelBreakdown } from '../shared/types.js';
@@ -7,6 +7,7 @@ import { calculateCost, isLongContextCodexRequest, normalizeCodexModelName } fro
 import { type BlockGranularity } from './claudeJsonlParser.js';
 import { buildUsageFileIndex } from './usageFileIndex.js';
 import { getCodexSessionDirs, isCodexSessionDirAccessible } from './codexDataSources.js';
+import { readCodexRollout, parseCodexRollout, isInheritedCodexRecord, type CodexRecord } from './codexRollout.js';
 
 // ---------------------------------------------------------------------------
 // Zod schemas for JSONL event validation (format change detector)
@@ -30,6 +31,14 @@ const TokenCountPayloadSchema = z.object({
   info: TokenCountInfoSchema,
 });
 
+const ResponseUsageSchema = z.object({
+  thread_id: z.string(),
+  response_id: z.string().min(1),
+  turn_id: z.string().optional(),
+  usage: TokenUsageSchema,
+  thread_token_usage: TokenUsageSchema.optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -44,6 +53,8 @@ export interface ParsedTokenEvent {
   totalTokens: number;
   /** Cumulative total_token_usage identity used to merge overlapping files. */
   usageSnapshotKey?: string;
+  responseId?: string;
+  turnId?: string;
   longContextInputTokens?: number;
   longContextCachedInputTokens?: number;
   longContextOutputTokens?: number;
@@ -82,7 +93,7 @@ interface AggregateBucket {
   models: Map<string, TokenAccumulator>;
 }
 
-const CODEX_INDEX_VERSION = 'codex-session-v7-1min';
+const CODEX_INDEX_VERSION = 'codex-session-v8-zstd-responses';
 const DEFAULT_TZ = 'Asia/Shanghai';
 
 interface SerializedAggregateBucket {
@@ -180,33 +191,22 @@ function getSessionDirs(): string[] {
  * subagent's own events. ccusage identifies that replay by the repeated first
  * token-count second; preserve the cumulative baseline but do not count it.
  */
-function detectReplaySecond(content: string): string | null {
-  const prefix = content.slice(0, 16 * 1024);
-  if (!prefix.includes('thread_spawn') && !prefix.includes('forked_from_id')) return null;
+function detectReplaySecond(records: CodexRecord[], meta: Record<string, unknown>): string | null {
+  if (!meta.forked_from_id && !JSON.stringify(meta.source ?? '').includes('thread_spawn')) return null;
+  if (typeof meta.subagent_history_start_ordinal === 'number') return null;
 
   let firstSecond: string | null = null;
-  for (const line of content.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line) as Record<string, unknown>;
-      if (obj.type !== 'event_msg') continue;
-      const payload = (obj.payload as Record<string, unknown>) || {};
-      if (payload.type !== 'token_count') continue;
-      const info = (payload.info as Record<string, unknown>) || {};
-      if (!info.last_token_usage && !info.total_token_usage) continue;
-      const timestamp = (obj.timestamp as string) || '';
-      const second = timestamp.slice(0, 19);
-      if (!second) continue;
-      if (!firstSecond) {
-        firstSecond = second;
-      } else if (second === firstSecond) {
-        return firstSecond;
-      } else {
-        return null;
-      }
-    } catch {
-      continue;
-    }
+  for (const obj of records) {
+    if (obj.type !== 'event_msg') continue;
+    const payload = obj.payload;
+    if (payload.type !== 'token_count') continue;
+    const info = (payload.info as Record<string, unknown>) || {};
+    if (!info.last_token_usage && !info.total_token_usage) continue;
+    const second = (obj.timestamp || '').slice(0, 19);
+    if (!second) continue;
+    if (!firstSecond) firstSecond = second;
+    else if (second === firstSecond) return firstSecond;
+    else return null;
   }
   return null;
 }
@@ -216,7 +216,7 @@ export function isSessionsDirAccessible(): boolean {
 }
 
 /**
- * Recursively find all .jsonl files under the live and archived Codex session
+ * Recursively find JSONL and Zstandard files under the live and archived Codex session
  * directories. Codex moves completed transcripts to archived_sessions, but
  * usage history must remain cumulative after that lifecycle transition.
  */
@@ -253,7 +253,7 @@ export function scanCodexSessions(): string[] {
       }
       if (st.isDirectory()) {
         walk(full);
-      } else if (entry.endsWith('.jsonl')) {
+      } else if (entry.endsWith('.jsonl') || entry.endsWith('.jsonl.zst')) {
         addResult(full);
       }
     }
@@ -262,7 +262,13 @@ export function scanCodexSessions(): string[] {
   for (const dir of getSessionDirs()) {
     walk(dir);
   }
-  return results.sort();
+  // During compression/restoration both siblings may briefly exist. The live
+  // JSONL is authoritative and may already contain newer appended events.
+  return results.filter(path => !path.endsWith('.zst') || !seen.has(realPathKey(path.slice(0, -4)))).sort();
+}
+
+function realPathKey(path: string): string {
+  try { return realpathSync(path); } catch { return path; }
 }
 
 /**
@@ -276,50 +282,71 @@ export function scanCodexSessions(): string[] {
 export function parseCodexSession(filepath: string): ParsedSession | null {
   let content: string;
   try {
-    content = readFileSync(filepath, 'utf-8');
-  } catch {
+    content = readCodexRollout(filepath);
+  } catch (error) {
+    console.warn(`[codexParser] Cannot read rollout ${filepath}: ${error instanceof Error ? error.message : 'read failed'}`);
     return null;
   }
 
-  const lines = content.split('\n');
-  let sessionId = '';
-  let cwd = '';
+  const { meta, records } = parseCodexRollout(content);
+  const sessionId = typeof meta.id === 'string' ? meta.id : '';
+  if (!sessionId) return null;
+  const cwd = typeof meta.cwd === 'string' ? meta.cwd : '';
+  const createdAt = typeof meta.timestamp === 'string' ? meta.timestamp : '';
   let model = '';
   let currentModel = '';
-  let createdAt = '';
+  let currentTurnId = '';
   const tokenEvents: ParsedTokenEvent[] = [];
   let previousTotalUsage: z.infer<typeof TokenUsageSchema> | null = null;
   const seenTotalUsageSnapshots = new Set<string>();
   const seenUsageEvents = new Set<string>();
-  const replaySecond = detectReplaySecond(content);
+  const seenResponses = new Set<string>();
+  const responseRecords = new Map<CodexRecord, z.infer<typeof ResponseUsageSchema>>();
+  const modernSnapshots = new Set<string>();
+  const modernTurns = new Set<string>();
+  for (const record of records) {
+    if (record.type !== 'token_usage_record' || !record.payload.usage || isInheritedCodexRecord(record, meta)) continue;
+    const result = ResponseUsageSchema.safeParse(record.payload);
+    if (!result.success || result.data.thread_id !== sessionId) continue;
+    responseRecords.set(record, result.data);
+    if (result.data.turn_id) modernTurns.add(result.data.turn_id);
+    if (result.data.thread_token_usage) modernSnapshots.add(usageSnapshotKey(result.data.thread_token_usage));
+  }
+  const replaySecond = detectReplaySecond(records, meta);
   let skippingReplay = replaySecond !== null;
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(trimmed) as Record<string, unknown>;
-    } catch {
-      continue;
+  for (const obj of records) {
+    const { type, payload } = obj;
+    if (type === 'turn_context' || (type === 'event_msg' && payload.type === 'task_started')) {
+      currentTurnId = typeof payload.turn_id === 'string' ? payload.turn_id : '';
     }
-
-    const type = obj.type as string;
-
-    if (type === 'session_meta') {
-      const payload = (obj.payload as Record<string, unknown>) || {};
-      sessionId = (payload.id as string) || '';
-      cwd = (payload.cwd as string) || '';
-      createdAt = (payload.timestamp as string) || '';
-    }
-
-    if (type === 'turn_context') {
-      const payload = (obj.payload as Record<string, unknown>) || {};
-      if (payload.model) {
-        currentModel = payload.model as string;
+    if (type === 'turn_context' || type === 'world_state') {
+      const state = type === 'world_state' ? payload.state as Record<string, unknown> | undefined : payload;
+      const value = state?.model;
+      const nextModel = typeof value === 'string' ? value : (value as Record<string, unknown> | undefined)?.model;
+      if (typeof nextModel === 'string') {
+        currentModel = nextModel;
         if (!model) model = currentModel;
       }
+    }
+
+    const response = responseRecords.get(obj);
+    if (response) {
+      if (response.turn_id) currentTurnId = response.turn_id;
+      if (response.thread_token_usage) previousTotalUsage = response.thread_token_usage;
+      if (seenResponses.has(response.response_id)) continue;
+      seenResponses.add(response.response_id);
+      const rawEvent = subtractTokenUsage(response.usage, null);
+      tokenEvents.push(withLongContextUsage({
+        ...rawEvent,
+        timestamp: obj.timestamp || '',
+        model: currentModel || model || undefined,
+        responseId: response.response_id,
+        turnId: response.turn_id,
+        usageSnapshotKey: response.thread_token_usage ? usageSnapshotKey(response.thread_token_usage) : undefined,
+        cachedInputTokens: Math.min(rawEvent.cachedInputTokens, rawEvent.inputTokens),
+      }));
+      continue;
     }
 
     // Extract token counts from event_msg with nested token_count payload.
@@ -334,12 +361,19 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
         }
         const info = parseResult.data.info;
         if (!info) continue;
-        if (skippingReplay && timestamp.slice(0, 19) === replaySecond) {
+        if (isInheritedCodexRecord(obj, meta) || (skippingReplay && timestamp.slice(0, 19) === replaySecond)) {
           previousTotalUsage = info.total_token_usage;
           continue;
         }
         skippingReplay = false;
         const totalUsageKey = usageSnapshotKey(info.total_token_usage);
+        // Response records are the authoritative per-request usage for new
+        // turns. token_count is also emitted as a status snapshot, sometimes
+        // including inherited/child usage, so adding it would count twice.
+        if (modernSnapshots.has(totalUsageKey) || modernTurns.has(currentTurnId)) {
+          previousTotalUsage = info.total_token_usage;
+          continue;
+        }
         if (seenTotalUsageSnapshots.has(totalUsageKey)) continue;
         seenTotalUsageSnapshots.add(totalUsageKey);
 
@@ -355,6 +389,7 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
           timestamp,
           model: currentModel || model || undefined,
           usageSnapshotKey: totalUsageKey,
+          turnId: currentTurnId || undefined,
           cachedInputTokens: Math.min(rawEvent.cachedInputTokens, rawEvent.inputTokens),
         });
         const eventKey = [
@@ -399,42 +434,43 @@ function fallbackEventKey(ev: ParsedTokenEvent): string {
 
 /** Merge rollout files that contain overlapping snapshots of the same session. */
 export function deduplicateParsedSessions(sessions: ParsedSession[]): ParsedSession[] {
-  const merged = new Map<string, { session: ParsedSession; seenEvents: Set<string> }>();
+  const merged = new Map<string, ParsedSession>();
 
   for (const session of sessions) {
     let target = merged.get(session.id);
     if (!target) {
-      target = {
-        session: { ...session, tokenEvents: [] },
-        seenEvents: new Set(),
-      };
+      target = { ...session, tokenEvents: [] };
       merged.set(session.id, target);
     }
-
-    for (const event of session.tokenEvents) {
-      const key = event.usageSnapshotKey || fallbackEventKey(event);
-      if (target.seenEvents.has(key)) continue;
-      target.seenEvents.add(key);
-      target.session.tokenEvents.push(event);
-    }
+    target.tokenEvents.push(...session.tokenEvents);
   }
 
-  return [...merged.values()].map(({ session }) => ({
-    ...session,
-    tokenEvents: session.tokenEvents.sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
-  }));
+  return [...merged.values()].map(session => {
+    const modern = session.tokenEvents.filter(event => event.responseId);
+    const turns = new Set(modern.map(event => event.turnId).filter(Boolean));
+    const snapshots = new Set(modern.map(event => event.usageSnapshotKey).filter(Boolean));
+    const seen = new Set<string>();
+    const tokenEvents = session.tokenEvents.filter(event => {
+      if (!event.responseId && ((event.turnId && turns.has(event.turnId)) || (event.usageSnapshotKey && snapshots.has(event.usageSnapshotKey)))) return false;
+      const key = event.responseId ? `response:${event.responseId}` : event.usageSnapshotKey || fallbackEventKey(event);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    return { ...session, tokenEvents };
+  });
 }
 
 function loadIndexedSessions(): { sessions: ParsedSession[]; signature: string } {
   const result = buildUsageFileIndex<ParsedSession | null, { path: string }>({
     cacheName: 'codex-sessions',
-    parserVersion: `${CODEX_INDEX_VERSION}:pricing-v3:${getPricingExchangeRate()}`,
+    parserVersion: CODEX_INDEX_VERSION,
     files: scanCodexSessions().map(path => ({ path })),
     parseFile: file => parseCodexSession(file.path),
   });
   return {
     sessions: deduplicateParsedSessions(result.values.filter((session): session is ParsedSession => session !== null)),
-    signature: result.signature,
+    signature: `${result.signature}:pricing:${getPricingExchangeRate()}`,
   };
 }
 

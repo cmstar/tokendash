@@ -49,7 +49,7 @@ function indexPath(cacheName: string): string {
 }
 
 function loadIndex<T>(cacheName: string, parserVersion: string): PersistedIndex<T> {
-  const cached = memoryIndexes.get(cacheName) as PersistedIndex<T> | undefined;
+  const cached = memoryIndexes.get(indexPath(cacheName)) as PersistedIndex<T> | undefined;
   if (cached?.schemaVersion === SCHEMA_VERSION && cached.parserVersion === parserVersion) {
     return cached;
   }
@@ -57,7 +57,7 @@ function loadIndex<T>(cacheName: string, parserVersion: string): PersistedIndex<
   try {
     const parsed = JSON.parse(readFileSync(indexPath(cacheName), 'utf-8')) as PersistedIndex<T>;
     if (parsed.schemaVersion === SCHEMA_VERSION && parsed.parserVersion === parserVersion && Array.isArray(parsed.files)) {
-      memoryIndexes.set(cacheName, parsed as PersistedIndex<unknown>);
+      memoryIndexes.set(indexPath(cacheName), parsed as PersistedIndex<unknown>);
       return parsed;
     }
   } catch {
@@ -75,7 +75,7 @@ function saveIndex<T>(cacheName: string, index: PersistedIndex<T>): void {
     const tmp = `${path}.tmp`;
     writeFileSync(tmp, JSON.stringify(index), 'utf-8');
     renameSync(tmp, path);
-    memoryIndexes.set(cacheName, index as PersistedIndex<unknown>);
+    memoryIndexes.set(indexPath(cacheName), index as PersistedIndex<unknown>);
   } catch {
     // The index is an optimization; parsing from source remains correct.
   }
@@ -141,7 +141,7 @@ export function buildUsageFileIndex<T, TRef extends UsageFileRef>(
   if (changed) {
     saveIndex(options.cacheName, nextIndex);
   } else {
-    memoryIndexes.set(options.cacheName, nextIndex as PersistedIndex<unknown>);
+    memoryIndexes.set(indexPath(options.cacheName), nextIndex as PersistedIndex<unknown>);
   }
 
   return {

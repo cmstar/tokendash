@@ -36,7 +36,9 @@ describe('custom date ranges', () => {
   });
 
   it('treats date-only data as local calendar dates in Today', () => {
-    vi.useFakeTimers();
+    // This assertion needs only the wall clock; leave Vitest's timeout clock
+    // untouched, including on the minimum supported Node 20.10 runtime.
+    vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 6, 29, 0, 30));
     expect(localDateKey()).toBe('2026-07-29');
     expect(filterByTime([{ date: '2026-07-28' }, { date: '2026-07-29' }], 'today')).toEqual([{ date: '2026-07-29' }]);

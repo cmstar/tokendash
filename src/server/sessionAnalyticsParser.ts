@@ -22,6 +22,8 @@ import { parseAllSessions, scanCodexSessions, type ParsedSession } from './codex
 import { calculateCost as calculateCodexCost } from './codexPricing.js';
 import { parseAllOpenCodeEvents } from './opencodeParser.js';
 import { scanPiSessions, parsePiSession } from './piParser.js';
+import { buildUsageFileIndex } from './usageFileIndex.js';
+import { readCodexRollout, parseCodexRollout, isInheritedCodexRecord } from './codexRollout.js';
 
 export type SessionAnalyticsRange = TimeRangeKey;
 
@@ -43,6 +45,8 @@ export interface SessionAnalyticsIndexedSession {
   events: SessionEvent[];
   /** Local-only source pointer used to hydrate one opened Claude session. */
   sourceFile?: string;
+  /** Read full Codex bodies only when a user opens a session's content. */
+  codexSourceFiles?: string[];
 }
 
 interface SessionSource {
@@ -402,22 +406,56 @@ function outputSuccess(output: unknown): boolean | undefined {
   return typeof exitCode === 'number' ? exitCode === 0 : undefined;
 }
 
-function codexTranscriptMetadata(sessionId: string): CodexTranscriptMetadata {
-  const filepath = scanCodexSessions().find(path => basename(path).includes(sessionId));
-  if (!filepath) return { userTurns: 0, toolCalls: 0, skillCalls: 0, events: [] };
-  let raw = '';
-  try { raw = readFileSync(filepath, 'utf8'); } catch { return { userTurns: 0, toolCalls: 0, skillCalls: 0, events: [] }; }
-  return parseCodexTranscriptMetadata(raw);
+function codexMetadataEventKey(event: SessionEvent): string {
+  return JSON.stringify([event.type, event.timestamp, event.callId, event.toolName, event.skillName, event.summary, event.contentPreview]);
+}
+
+function loadCodexTranscriptMetadata(): Map<string, { metadata: CodexTranscriptMetadata; paths: string[] }> {
+  const indexed = buildUsageFileIndex({
+    cacheName: 'codex-transcripts',
+    parserVersion: 'codex-transcripts-v1-zstd',
+    files: scanCodexSessions().map(path => ({ path })),
+    parseFile: ({ path }) => {
+      try {
+        const raw = readCodexRollout(path);
+        const rollout = parseCodexRollout(raw);
+        if (typeof rollout.meta.id !== 'string') return null;
+        const metadata = parseCodexTranscriptMetadata(raw, rollout);
+        // Persist safe previews/counters, not a second copy of full transcripts.
+        metadata.events = metadata.events.map(({ content: _content, ...event }) => event);
+        return { id: rollout.meta.id, metadata, path };
+      } catch (error) {
+        console.warn(`[codexAnalytics] Cannot index rollout ${path}: ${error instanceof Error ? error.message : 'read failed'}`);
+        return null;
+      }
+    },
+  });
+  const bySession = new Map<string, { metadata: CodexTranscriptMetadata; paths: string[]; seen: Set<string> }>();
+  for (const value of indexed.values) {
+    if (!value) continue;
+    let target = bySession.get(value.id);
+    if (!target) {
+      target = { metadata: { ...value.metadata, events: [] }, paths: [], seen: new Set() };
+      bySession.set(value.id, target);
+    }
+    target.paths.push(value.path);
+    for (const event of value.metadata.events) {
+      const key = codexMetadataEventKey(event);
+      if (target.seen.has(key)) continue;
+      target.seen.add(key);
+      target.metadata.events.push({ ...event, id: `codex-${target.metadata.events.length + 1}` });
+    }
+    target.metadata.userTurns = target.metadata.events.filter(event => event.type === 'user_message').length;
+    target.metadata.toolCalls = target.metadata.events.filter(event => event.type === 'tool_call').length;
+    target.metadata.skillCalls = target.metadata.events.filter(event => event.type === 'skill_call').length;
+  }
+  return bySession;
 }
 
 /** Exported for parser fixtures: canonical event_msg records beat synthetic role=user envelopes. */
-export function parseCodexTranscriptMetadata(raw: string): CodexTranscriptMetadata {
+export function parseCodexTranscriptMetadata(raw: string, rollout = parseCodexRollout(raw)): CodexTranscriptMetadata {
   const initial: CodexTranscriptMetadata = { userTurns: 0, toolCalls: 0, skillCalls: 0, events: [] };
-  const records: Record<string, unknown>[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    try { records.push(JSON.parse(line) as Record<string, unknown>); } catch { /* ignore malformed transcript rows */ }
-  }
+  const records = rollout.records.filter(record => !isInheritedCodexRecord(record, rollout.meta));
   // Desktop Codex writes a canonical event_msg for an actual human turn. It
   // intentionally excludes the role=user envelope containing AGENTS.md and
   // other runtime context, which must never become a user request in the UI.
@@ -570,8 +608,7 @@ export function parseCodexTranscriptMetadata(raw: string): CodexTranscriptMetada
   return initial;
 }
 
-function codexSessionToIndexed(session: ParsedSession): SessionAnalyticsIndexedSession {
-  const transcript = codexTranscriptMetadata(session.id);
+function codexSessionToIndexed(session: ParsedSession, transcript: CodexTranscriptMetadata, paths: string[]): SessionAnalyticsIndexedSession {
   const events = session.tokenEvents.map((event, index): SessionEvent => {
     const model = event.model || session.model || 'unknown';
     const cost = calculateCodexCost(event, new Set([model]));
@@ -601,6 +638,7 @@ function codexSessionToIndexed(session: ParsedSession): SessionAnalyticsIndexedS
   const models = [...new Set(events.map(event => event.model).filter((model): model is string => Boolean(model)))];
 
   return {
+    codexSourceFiles: paths,
     summary: {
       id: session.id,
       agent: 'codex',
@@ -991,7 +1029,12 @@ function loadSource(agent: string, revision: string): SessionSource {
     if (capabilities.skills) capabilities.skillSemantics = semantics.size > 1 ? 'mixed' : [...semantics][0];
     source = { sessions: sources.flatMap(({ name, source }) => source.sessions.map(session => ({ ...session, events: session.events.map(event => event.model ? { ...event, model: normalizePricingModel(event.model) } : event), summary: { ...session.summary, id: name + '::' + session.summary.id, models: [...new Set(session.summary.models.map(normalizePricingModel))], project: session.summary.project ? canonicalProjectName(session.summary.project) : undefined } }))), capabilities, indexedAt: new Date().toISOString() };
   } else if (agent === 'codex') {
-    const sessions = parseAllSessions().map(codexSessionToIndexed);
+    const parsed = parseAllSessions();
+    const transcripts = loadCodexTranscriptMetadata();
+    const sessions = parsed.map(session => {
+      const transcript = transcripts.get(session.id);
+      return codexSessionToIndexed(session, transcript?.metadata ?? { userTurns: 0, toolCalls: 0, skillCalls: 0, events: [] }, transcript?.paths ?? []);
+    });
     const hasSkill = sessions.some(session => session.events.some(event => event.type === 'skill_call'));
     const hasInferredSkill = sessions.some(session => session.events.some(event => event.type === 'skill_call' && event.skillOrigin === 'inferred'));
     const hasExplicitSkill = sessions.some(session => session.events.some(event => event.type === 'skill_call' && event.skillOrigin !== 'inferred'));
@@ -1300,6 +1343,21 @@ function hydrateClaudeEventContent(indexed: SessionAnalyticsIndexedSession): Ses
   return indexed.events.map(event => hydrated.has(event.id) ? { ...event, content: hydrated.get(event.id) } : event);
 }
 
+function hydrateCodexEventContent(indexed: SessionAnalyticsIndexedSession): SessionEvent[] {
+  const bodies = new Map<string, string>();
+  for (const path of indexed.codexSourceFiles ?? []) {
+    try {
+      for (const event of parseCodexTranscriptMetadata(readCodexRollout(path)).events) {
+        if (event.content) bodies.set(codexMetadataEventKey(event), event.content);
+      }
+    } catch { /* Keep cached previews if a source is temporarily unavailable. */ }
+  }
+  return indexed.events.map(event => {
+    const content = bodies.get(codexMetadataEventKey(event));
+    return content ? { ...event, content } : event;
+  });
+}
+
 export function getSessionDetail(agent: string, id: string, revision = getSessionAnalyticsSourceRevision(agent), includeContent = false): SessionDetail | undefined {
   if (agent === 'all') {
     const separator = id.indexOf('::');
@@ -1312,6 +1370,8 @@ export function getSessionDetail(agent: string, id: string, revision = getSessio
   if (!session) return undefined;
   const hydrated = includeContent && agent === 'claude'
     ? { ...session, events: hydrateClaudeEventContent(session) }
+    : includeContent && agent === 'codex'
+      ? { ...session, events: hydrateCodexEventContent(session) }
     : session;
   return buildSessionDetail(hydrated, source.capabilities, source.indexedAt, includeContent);
 }
