@@ -61,12 +61,14 @@ Run the non-publishing verification first:
 npm run deploy:check
 ```
 
-This runs unit, type, and end-to-end tests; builds the npm package, app, and
-versioned DMG; generates the signed `appcast.xml`; and validates the bundle,
-DMG, enclosure URL, and Sparkle signature.
+This checks the exact committed candidate against its successful CI run, downloads
+Linux amd64 deb/AppImage and the Windows x64 NSIS installer, runs local tests,
+builds the macOS arm64 app/DMG, and generates its signed Sparkle appcast. Every
+artifact is checked for version/source consistency and hashed into
+`release-manifest.json` and `SHA256SUMS`. It publishes nothing.
 
-Once the release commit is pushed and local `main` exactly matches
-`origin/main`, publish everything through the single entry point:
+After merging and pushing the verified release candidate to `main`, wait for
+its **push/main** CI build, then use the single publishing entry point:
 
 ```bash
 npm run deploy
@@ -74,16 +76,33 @@ npm run deploy
 
 The deploy command:
 
-1. Repeats all verification and artifact generation.
-2. Creates a draft GitHub Release containing both the DMG and `appcast.xml`.
-3. Publishes the matching npm version.
-4. Pushes the release tag.
-5. Publishes the GitHub Release as the latest release.
+1. Requires clean local `main` equal to remote `main`, with an unpublished version.
+2. Validates CI builds for that exact commit and every desktop artifact.
+3. Builds/verifies macOS locally using the existing Sparkle key.
+4. Creates a draft Release containing the DMG, appcast, Linux deb/AppImage,
+   Windows setup.exe, per-platform source records, manifest, and checksums.
+5. Pushes the immutable tag using the maintainer's Git credentials.
+6. Waits for `release-npm.yml` to download and verify the actual uploaded bytes,
+   pack once, and publish that exact tarball using npm Trusted Publishing/OIDC.
+7. Verifies npm integrity before making the complete GitHub Release public/latest.
 
-The command fails before publishing when the npm version, git tag, release, key,
-DMG, appcast, or signature is missing or inconsistent. Do not publish npm or
-create GitHub Releases manually; that bypasses the checks that keep Sparkle
-updates complete.
+Do not publish npm or create Releases manually. The workflow filename
+`release-npm.yml` is part of the configured npm trusted-publisher identity.
+No local npm token or OTP is required. Local `deploy.sh` needs authenticated git
+and gh access; the publisher needs GitHub-hosted Node 24/npm 11.6.2 and OIDC.
+
+If publishing fails, retain the draft and tag for inspection. Fix a transient
+failure by rerunning the existing release workflow; never delete or move a tag.
+If the npm version already exists, resumption is permitted only when its
+`dist.integrity` exactly matches the packed tarball. npm scans accepted uploads
+before making them installable, typically taking five minutes and sometimes
+over fifteen minutes ([npm announcement](https://github.blog/changelog/2026-07-28-npm-publish-time-malware-scanning-and-dual-use-metadata/)).
+The publisher checks availability every 30 seconds for up to 20 minutes and
+keeps the GitHub Release as a draft until the package integrity is verified.
+If scanning takes longer, wait for availability and rerun the existing workflow;
+retain the original tag and assets. Windows is currently
+unsigned; its NSIS installer provisions WebView2 but requires Node 20.10+.
+Linux/Windows do not yet have the macOS Sparkle automatic update mechanism.
 
 Local releases use the Sparkle private key in the login Keychain. CI can inject
 the same key without importing it by setting `SPARKLE_PRIVATE_KEY_FILE` to a

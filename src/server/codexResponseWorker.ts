@@ -1,4 +1,5 @@
 import { parentPort } from 'node:worker_threads';
+import './appSettings.js';
 import type { AggregateOptions } from './codexParser.js';
 import { type BlockGranularity } from './claudeJsonlParser.js';
 

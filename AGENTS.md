@@ -60,9 +60,11 @@ Playwright config uses `vite preview` (port 3457) to serve the built frontend, w
 For every release:
 
 1. Update `package.json`, `package-lock.json`, and `CHANGELOG.md`.
-2. Run `npm run deploy:check`.
+2. Run `npm run deploy:check` after the exact candidate commit has a successful desktop CI build.
 3. Commit and push the complete release candidate to `main`.
-4. Run `npm run deploy` to publish npm, the git tag, DMG, appcast, and GitHub Release together.
+4. Run `npm run deploy` to stage macOS DMG/appcast, Linux deb/AppImage, Windows NSIS, and their source/checksum manifest; then push the tag and wait for gated npm OIDC publication and GitHub Release completion.
 
 Do not publish npm or create the GitHub Release manually; the unified deploy
-script enforces the paired DMG/appcast requirement for Sparkle updates.
+script enforces all platform artifacts and paired DMG/appcast for Sparkle updates.
+A failed publisher retains its draft and immutable tag: rerun release-npm.yml
+only after inspecting the failure; never delete/move a tag to retry npm.

@@ -1,0 +1,22 @@
+# The popover page is served by the local daemon over http://127.0.0.1, so its
+# origin is not `tauri://localhost`. Tauri then requires every command the page
+# calls to be listed in a capability permission; without this file the whole IPC
+# surface is rejected ("Command ... not allowed by ACL").
+[[permission]]
+identifier = "panel-commands"
+description = "Allows the daemon-served popover page to call the desktop shell commands."
+commands.allow = [
+  "popover_status",
+  "get_desktop_settings",
+  "save_desktop_settings",
+  "get_configured_providers",
+  "save_credential",
+  "delete_credential",
+  "get_daemon_port",
+  "open_dashboard",
+  "open_external",
+  "hide_popover",
+  "set_popover_height",
+  "notify",
+  "app_version",
+]

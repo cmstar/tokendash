@@ -240,6 +240,11 @@ esac
     expect(apiClient).toContain('"/quota\\(refresh ? "?refresh=1" : "")"');
     // Detail endpoints take a `forceRefresh` flag, but automatic refreshes stay
     // cache-aware. Only refreshNow() is allowed to bypass usage and quota caches.
+    // The badge is the primary live signal, so its 30s update must not reuse
+    // the daemon's 5-minute daily response cache.
+    expect(badgeUpdater).toContain('api.getDaily(agent: agent, refresh: true)');
+    // Detail endpoints take a `forceRefresh` flag, with popover-open and active
+    // visible refreshes forcing past the usage cache while quota stays cached.
     expect(badgeUpdater).toContain('api.getDaily(agent: agent, refresh: forceRefresh)');
     // v1.9.0: blocks fetch the one 5-minute base every range derives from.
     expect(badgeUpdater).toContain('api.getBlocks(agent: agent, refresh: forceRefresh, granularity: .fiveMin)');
@@ -248,6 +253,9 @@ esac
     expect(badgeUpdater).toContain('refreshNow()');
     expect(badgeUpdater).toContain('forceRefresh: true, forceQuota: true, recordRefreshTime: true');
     expect(badgeUpdater).not.toContain('performBackgroundRefresh() async {\n        await performFullUpdate(forceRefresh: true');
+    expect(badgeUpdater).toContain('performFullUpdate(forceRefresh: true, forceQuota: false)');
+    expect(badgeUpdater).toContain('performActiveDetailRefresh');
+    expect(badgeUpdater).toContain('activeDetailInterval: TimeInterval = 60');
     expect(webRefreshHook).toContain('setInterval(() => { void fetchData(false); }, intervalMs)');
     expect(webRefreshHook).toContain('const refetch = useCallback(() => fetchData(true)');
     expect(badgeUpdater).toContain('retainUsableQuotas');

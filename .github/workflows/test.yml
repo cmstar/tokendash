@@ -5,32 +5,73 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   unit-tests:
-    name: Unit Tests
+    name: Unit Tests (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20.10.0', '20', '22', '24']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
+
+      - name: Install SQLite fallback for Node 20
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
 
       - run: npm ci
 
+      - run: npm run typecheck
+
       - run: npm test
+
+      - run: npm run build
+
+      - name: Verify the packaged CLI starts on this runtime
+        run: |
+          node bin/tokendash.js --version
+          node -e "require('./dist/electron-server.cjs'); require('./dist/daemon.cjs')"
+
+  macos:
+    name: macOS (Swift)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Swift tests
+        working-directory: TokenDashSwift
+        run: swift test
+
+      - name: Release build
+        working-directory: TokenDashSwift
+        run: swift build -c release
 
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
@@ -42,3 +83,159 @@ jobs:
       - run: npx playwright test
         env:
           CI: true
+
+  desktop:
+    name: Desktop (Tauri / Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Tauri's Linux build deps: webkit2gtk for the webview, appindicator for
+      # the tray, librsvg for icon rasterization at bundle time.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # tauri.conf.json 的 bundle.resources 指向 gen/server；该目录由
+      # package-linux.sh 生成且在 .gitignore 中。Rust 检查不需要真实资源，
+      # 但 tauri-build 会校验路径存在，故建空目录占位。
+      - name: Stage bundle resources placeholder
+        run: mkdir -p src-tauri/gen/server
+
+      - name: Check formatting
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        working-directory: src-tauri
+        run: cargo clippy --release -- -D warnings
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --release
+
+  linux-bundle:
+    name: Linux Bundle (deb + AppImage)
+    # Build against the oldest supported glibc/WebKitGTK baseline.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: linux-ubuntu22.04
+
+      # FUSE is unavailable in containers; this makes linuxdeploy unpack
+      # itself instead of mounting.
+      - name: Build deb + AppImage
+        run: npm ci && npm run build:linux
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+
+      - name: Stage versioned Linux release artifacts
+        run: node scripts/stage-desktop-artifacts.mjs linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tokendash-linux
+          if-no-files-found: error
+          path: release/ci-linux/*
+
+
+  windows-bundle:
+    name: Windows (NSIS, Rust and installed-app smoke)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - run: npm ci
+
+      - name: Build Windows x64 installer
+        run: npm run build:windows
+
+      - name: Check Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        working-directory: src-tauri
+        run: cargo clippy --release --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: Rust tests on Windows
+        working-directory: src-tauri
+        run: cargo test --release --target x86_64-pc-windows-msvc
+
+      - name: Install and smoke-test the packaged desktop
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe'
+          if ($installer.Count -ne 1) { throw 'Expected one NSIS installer' }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)" }
+          $executable = Join-Path $env:LOCALAPPDATA 'TokenDash/tokendash-desktop.exe'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          ./scripts/test-windows-desktop.ps1 -Executable $executable -ExpectedVersion $version
+
+      - name: Stage versioned Windows release artifacts
+        run: node scripts/stage-desktop-artifacts.mjs windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tokendash-windows
+          if-no-files-found: error
+          path: release/ci-windows/*

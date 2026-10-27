@@ -1,3 +1,5 @@
+import './appSettings.js';
+import { modelCost, getPricingExchangeRate } from '../shared/modelPricing.js';
 import { readFileSync, readdirSync, statSync, accessSync, constants } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -164,7 +166,8 @@ export function parseOpenClawSession(ref: SessionRef): OpenClawSession | null {
   } catch { /* ok */ }
 
   // Return cached result if file hasn't changed
-  const cached = sessionCache.get(ref.sessionFile);
+  const cacheKey = `${ref.sessionFile}:${getPricingExchangeRate()}`;
+  const cached = sessionCache.get(cacheKey);
   if (cached && cached.mtime === fileMtimeMs) {
     return cached.result;
   }
@@ -227,8 +230,8 @@ export function parseOpenClawSession(ref: SessionRef): OpenClawSession | null {
       const cacheRead = Number(usage.cacheRead ?? 0);
       const cacheWrite = Number(usage.cacheWrite ?? 0);
       const costObj = (usage.cost as Record<string, unknown>) || {};
-      const cost = Number(costObj.total ?? 0);
       const timestampMs = Number(msg.timestamp ?? fileMtimeMs);
+      const cost = modelCost(model, input, output, cacheRead, cacheWrite, timestampMs) ?? Number(costObj.total ?? 0);
 
       tokenEvents.push({
         timestampMs,
@@ -244,12 +247,12 @@ export function parseOpenClawSession(ref: SessionRef): OpenClawSession | null {
   }
 
   if (tokenEvents.length === 0) {
-    sessionCache.set(ref.sessionFile, { mtime: fileMtimeMs, result: null });
+    sessionCache.set(cacheKey, { mtime: fileMtimeMs, result: null });
     return null;
   }
 
   const result: OpenClawSession = { id: ref.sessionId, agentId: ref.agentId, tokenEvents };
-  sessionCache.set(ref.sessionFile, { mtime: fileMtimeMs, result });
+  sessionCache.set(cacheKey, { mtime: fileMtimeMs, result });
   return result;
 }
 
@@ -350,7 +353,9 @@ function accToEntry(date: string, acc: TokenAccumulator, models: Set<string>): D
       cacheCreationTokens: acc.cacheWriteTokens,
       cacheReadTokens: acc.cacheReadTokens,
       cost: costPerModel,
+      estimatedTokens: 0,
     })),
+    estimatedTokens: 0,
   };
 }
 
@@ -404,6 +409,7 @@ export function getDailyResponse(options?: OpenClawAggregateOptions): DailyRespo
       cacheReadTokens: totalsAcc.cacheReadTokens,
       totalTokens: totalsAcc.totalTokens,
       totalCost: totalsAcc.cost,
+      estimatedTokens: 0,
     },
   };
 }

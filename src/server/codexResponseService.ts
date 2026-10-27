@@ -1,4 +1,5 @@
 import { getCodexUsageScopeKey } from './codexDataSources.js';
+import { getPricingExchangeRate } from '../shared/modelPricing.js';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -64,7 +65,7 @@ function serializeOptions(options?: Partial<AggregateOptions> & { granularity?: 
 type CodexServiceOptions = Partial<AggregateOptions> & { granularity?: BlockGranularity };
 
 function requestKey(kind: CodexResponseKind, options?: CodexServiceOptions): string {
-  return `${getCodexUsageScopeKey()}:${kind}:${JSON.stringify(serializeOptions(options) ?? {})}`;
+  return `${getCodexUsageScopeKey()}:${getPricingExchangeRate()}:${kind}:${JSON.stringify(serializeOptions(options) ?? {})}`;
 }
 
 function workerTimeoutMs(): number {

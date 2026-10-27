@@ -2,6 +2,7 @@ import { type Request, type Response } from 'express';
 import { cache } from '../cache.js';
 import { validateAnalytics } from '../../shared/schemas.js';
 import { extractClaudeToolCalls, extractOpenClawToolCalls, computeAnalytics } from '../analyticsParser.js';
+import { extractSessionToolCalls } from '../sessionAnalyticsParser.js';
 
 const EMPTY_ANALYTICS = {
   codeChangeTrend: [],
@@ -15,7 +16,7 @@ export async function getAnalytics(req: Request, res: Response): Promise<void> {
   const project = req.query.project as string || undefined;
   const force = req.query.refresh === '1' || req.query.refresh === 'true';
 
-  if (agent === 'codex' || agent === 'opencode' || agent === 'pi') {
+  if (agent === 'codex') {
     res.json(EMPTY_ANALYTICS);
     return;
   }
@@ -51,7 +52,7 @@ export async function getAnalytics(req: Request, res: Response): Promise<void> {
 }
 
 function fetchAnalyticsData(agent: string, project?: string) {
-  const toolCalls = agent === 'openclaw'
+  const toolCalls = agent === 'opencode' || agent === 'pi' ? extractSessionToolCalls(agent, project) : agent === 'openclaw'
     ? extractOpenClawToolCalls(project || null)
     : extractClaudeToolCalls(project || null);
   return validateAnalytics(computeAnalytics(toolCalls));

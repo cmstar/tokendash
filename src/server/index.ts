@@ -354,8 +354,13 @@ export { main };
 // 仅当文件被直接执行时调用（tsx watch / node index.js）；
 // bin/tokendash.js 通过 import { main } 自行调用，不触发此处。
 // process.argv[1] 在部分运行时（如 REPL、嵌入式调用）可能为空，先守卫再转换。
+// Bundling replaces every import.meta.url with the bundle entry URL. The
+// daemon imports createApp from this module, so direct-entry equality alone
+// would also launch the interactive CLI inside the headless daemon bundle.
+declare const __TOKENDASH_DAEMON_BUNDLE__: boolean;
+const isDaemonBundle = typeof __TOKENDASH_DAEMON_BUNDLE__ !== 'undefined' && __TOKENDASH_DAEMON_BUNDLE__;
 const entrypoint = process.argv[1];
-if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
+if (!isDaemonBundle && entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
   main().catch((error) => {
     console.error('Fatal error:', error);
     process.exit(1);

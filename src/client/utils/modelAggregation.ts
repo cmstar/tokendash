@@ -13,6 +13,7 @@ export function modelTokenMode(entry: DailyEntry): 'inputOutput' | 'withReadCach
 }
 
 export function modelBreakdownTokens(breakdown: DailyEntry['modelBreakdowns'][number], mode: ReturnType<typeof modelTokenMode>): number {
+  if (breakdown.totalTokens !== undefined) return breakdown.totalTokens;
   const base = breakdown.inputTokens + breakdown.outputTokens;
   if (mode === 'withAllCache') return base + breakdown.cacheCreationTokens + breakdown.cacheReadTokens;
   if (mode === 'withReadCache') return base + breakdown.cacheReadTokens;

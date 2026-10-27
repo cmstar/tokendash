@@ -1,3 +1,5 @@
+import './appSettings.js';
+import { modelCost, getPricingExchangeRate } from '../shared/modelPricing.js';
 import { readFileSync, readdirSync, statSync, accessSync, constants } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -18,14 +20,20 @@ import { type BlockGranularity } from './claudeJsonlParser.js';
 //                    以及 message.model / message.provider
 // ---------------------------------------------------------------------------
 
-const PI_INDEX_VERSION = 'pi-session-v3-1min';
+const PI_INDEX_VERSION = 'pi-session-v4-1min';
 const DEFAULT_TZ = 'Asia/Shanghai';
+
+// 估算基线：pi 会话的 system prompt + 工具 schema 不在 JSONL 里，
+// 但每轮请求都会携带，按典型 pi 会话体量取 4k tokens 打底。
+const BASELINE_CONTEXT_TOKENS = 4000;
+// 图片内容（toolResult 中的 image）按 VLM 常规切块体量估算
+const IMAGE_TOKEN_ESTIMATE = 1000;
 
 // ---------------------------------------------------------------------------
 // 内部类型
 // ---------------------------------------------------------------------------
 
-interface PiTokenEvent {
+export interface PiTokenEvent {
   timestamp: string;
   model: string;
   inputTokens: number;
@@ -34,9 +42,11 @@ interface PiTokenEvent {
   cacheWriteTokens: number;
   totalTokens: number;
   cost: number;
+  /** true = provider 未返回 usage，token 数由消息内容估算 */
+  estimated: boolean;
 }
 
-interface PiSession {
+export interface PiSession {
   id: string;
   cwd: string;
   createdAt: string;
@@ -50,6 +60,7 @@ interface TokenAccumulator {
   cacheWriteTokens: number;
   totalTokens: number;
   cost: number;
+  estimatedTokens: number;
 }
 
 interface AggregateBucket {
@@ -112,6 +123,42 @@ export function scanPiSessions(): string[] {
 // 单文件解析
 // ---------------------------------------------------------------------------
 
+/** 粗略 token 估算：CJK ≈ 1 token/字，其他（英文/代码）≈ 3.5 字符/token。 */
+function estimateTokens(text: string): number {
+  if (!text) return 0;
+  let cjk = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) ||   // CJK 统一表意文字
+      (code >= 0x3400 && code <= 0x4dbf) ||   // 扩展 A
+      (code >= 0x3000 && code <= 0x303f) ||   // CJK 标点
+      (code >= 0xff00 && code <= 0xffef)      // 全角形式
+    ) {
+      cjk++;
+    }
+  }
+  const chars = [...text].length;
+  return Math.round(cjk + (chars - cjk) / 3.5);
+}
+
+/** user / assistant / toolResult 的 content 统一估算（string 或 part 数组）。 */
+function estimateContentTokens(content: unknown): number {
+  if (content == null) return 0;
+  if (typeof content === 'string') return estimateTokens(content);
+  if (!Array.isArray(content)) return 0;
+  let total = 0;
+  for (const part of content) {
+    const p = part as Record<string, unknown> | null;
+    if (!p) continue;
+    if (p.type === 'text' && typeof p.text === 'string') total += estimateTokens(p.text);
+    else if (p.type === 'thinking' && typeof p.thinking === 'string') total += estimateTokens(p.thinking);
+    else if (p.type === 'toolCall') total += estimateTokens(`${p.name ?? ''}${JSON.stringify(p.arguments ?? {})}`);
+    else if (p.type === 'image') total += IMAGE_TOKEN_ESTIMATE;
+  }
+  return total;
+}
+
 export function parsePiSession(filepath: string): PiSession | null {
   let content: string;
   try {
@@ -125,6 +172,8 @@ export function parsePiSession(filepath: string): PiSession | null {
   let createdAt = '';
   let currentModel = '';
   const tokenEvents: PiTokenEvent[] = [];
+  // 当前轮请求携带的上下文体量（估算），真实 usage 出现时按实际值重锚定
+  let contextTokens = BASELINE_CONTEXT_TOKENS;
 
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
@@ -151,31 +200,72 @@ export function parsePiSession(filepath: string): PiSession | null {
       continue;
     }
 
+    // 压缩后历史被 summary 取代，上下文回落到底线 + summary
+    if (type === 'compaction') {
+      contextTokens = BASELINE_CONTEXT_TOKENS + estimateTokens((obj.summary as string) || '');
+      continue;
+    }
+
     if (type !== 'message') continue;
 
     const msg = obj.message as Record<string, unknown> | undefined;
-    if (!msg || msg.role !== 'assistant') continue;
+    if (!msg) continue;
+    const role = msg.role as string;
+
+    // 非 assistant 消息只累积上下文，不产生 token 事件
+    if (role === 'user' || role === 'toolResult') {
+      contextTokens += estimateContentTokens(msg.content);
+      continue;
+    }
+    if (role !== 'assistant') continue;
 
     const usage = msg.usage as Record<string, unknown> | undefined;
-    if (!usage) continue;
-
-    const totalTokens = (usage.totalTokens as number) || 0;
-    if (totalTokens === 0) continue;
-
-    const costObj = (usage.cost as Record<string, unknown>) || {};
+    const totalTokens = (usage?.totalTokens as number) || 0;
     const model = (msg.model as string) || currentModel || 'unknown';
     const timestamp = (obj.timestamp as string) || '';
+    const contentTokens = estimateContentTokens(msg.content);
 
+    if (totalTokens > 0) {
+      const input = (usage!.input as number) || 0;
+      const reasoning = (usage!.reasoning as number) || 0;
+      let output = (usage!.output as number) || 0;
+      if (input + output === 0 && reasoning === 0) output = totalTokens; // 部分 provider 只报 total
+      // reasoning 是模型生成的思维链 token，计入输出与总量
+      output += reasoning;
+      const cacheRead = (usage!.cacheRead as number) || 0;
+      const cacheWrite = (usage!.cacheWrite as number) || 0;
+      const costObj = (usage!.cost as Record<string, unknown>) || {};
+      tokenEvents.push({
+        timestamp,
+        model,
+        inputTokens: input,
+        outputTokens: output,
+        cacheReadTokens: cacheRead,
+        cacheWriteTokens: cacheWrite,
+        totalTokens: (totalTokens || input + output + cacheRead) + reasoning,
+        cost: modelCost(model, input, output, cacheRead, cacheWrite, timestamp) ?? ((costObj.total as number) || 0),
+        estimated: false,
+      });
+      // 本条 assistant 内容会在下一轮被回放；有真实 input 时用它重锚定
+      contextTokens = (input > 0 ? input : contextTokens) + output;
+      continue;
+    }
+
+    // provider 未返回 usage（本地模型 / 部分代理）：有实际输出才按内容估算，
+    // 空内容（如中途 aborted）不记录
+    if (contentTokens === 0) continue;
     tokenEvents.push({
       timestamp,
       model,
-      inputTokens: (usage.input as number) || 0,
-      outputTokens: (usage.output as number) || 0,
-      cacheReadTokens: (usage.cacheRead as number) || 0,
-      cacheWriteTokens: (usage.cacheWrite as number) || 0,
-      totalTokens,
-      cost: (costObj.total as number) || 0,
+      inputTokens: contextTokens,
+      outputTokens: contentTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: contextTokens + contentTokens,
+      cost: 0,
+      estimated: true,
     });
+    contextTokens += contentTokens;
   }
 
   if (!sessionId) return null;
@@ -189,7 +279,7 @@ export function parsePiSession(filepath: string): PiSession | null {
 function loadSessions(): PiSession[] {
   const result = buildUsageFileIndex<PiSession | null, { path: string }>({
     cacheName: 'pi-sessions',
-    parserVersion: PI_INDEX_VERSION,
+    parserVersion: `${PI_INDEX_VERSION}:pricing-v2:${getPricingExchangeRate()}`,
     files: scanPiSessions().map(path => ({ path })),
     parseFile: file => parsePiSession(file.path),
   });
@@ -263,7 +353,7 @@ export function normalizePiProjectPath(cwd: string): string {
 // ---------------------------------------------------------------------------
 
 function emptyAcc(): TokenAccumulator {
-  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, cost: 0 };
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, cost: 0, estimatedTokens: 0 };
 }
 
 function addEvent(acc: TokenAccumulator, ev: PiTokenEvent): void {
@@ -273,6 +363,7 @@ function addEvent(acc: TokenAccumulator, ev: PiTokenEvent): void {
   acc.cacheWriteTokens += ev.cacheWriteTokens;
   acc.totalTokens += ev.totalTokens;
   acc.cost += ev.cost;
+  if (ev.estimated) acc.estimatedTokens += ev.totalTokens;
 }
 
 function mergeAcc(target: TokenAccumulator, source: TokenAccumulator): void {
@@ -282,6 +373,7 @@ function mergeAcc(target: TokenAccumulator, source: TokenAccumulator): void {
   target.cacheWriteTokens += source.cacheWriteTokens;
   target.totalTokens += source.totalTokens;
   target.cost += source.cost;
+  target.estimatedTokens += source.estimatedTokens;
 }
 
 function addToBucket(bucket: AggregateBucket, ev: PiTokenEvent): void {
@@ -306,6 +398,7 @@ function accToEntry(date: string, acc: TokenAccumulator, modelAccs: Map<string, 
     cacheCreationTokens: m.cacheWriteTokens,
     cacheReadTokens: m.cacheReadTokens,
     cost: m.cost,
+    estimatedTokens: m.estimatedTokens,
   }));
   return {
     date,
@@ -317,6 +410,7 @@ function accToEntry(date: string, acc: TokenAccumulator, modelAccs: Map<string, 
     totalCost: acc.cost,
     modelsUsed: [...modelAccs.keys()],
     modelBreakdowns,
+    estimatedTokens: acc.estimatedTokens,
   };
 }
 
@@ -357,7 +451,11 @@ function groupSessions(
 
 export function getDailyResponse(options?: { timezone?: string }): DailyResponse {
   const tz = options?.timezone || DEFAULT_TZ;
-  const sessions = loadSessions();
+  return buildDailyFromSessions(loadSessions(), tz);
+}
+
+/** 纯函数：按日聚合已解析的会话，便于单元测试注入 fixture。 */
+export function buildDailyFromSessions(sessions: PiSession[], tz: string): DailyResponse {
   const grouped = groupSessions(sessions, 'day', tz);
 
   const daily: DailyEntry[] = [];
@@ -384,6 +482,7 @@ export function getDailyResponse(options?: { timezone?: string }): DailyResponse
       cacheReadTokens: totalsAcc.cacheReadTokens,
       totalTokens: totalsAcc.totalTokens,
       totalCost: totalsAcc.cost,
+      estimatedTokens: totalsAcc.estimatedTokens,
     },
   };
 }

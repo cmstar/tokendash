@@ -1,5 +1,6 @@
 import type { DailyEntry, Totals } from '../../shared/types.js';
-import { formatTokens, formatUSD } from '../utils/formatters.js';
+import { formatTokens } from '../utils/formatters.js';
+import { useCurrency } from '../hooks/useCurrency.js';
 
 interface SummaryCardsProps {
   daily: DailyEntry[];
@@ -7,6 +8,7 @@ interface SummaryCardsProps {
 }
 
 export function SummaryCards({ daily, totals }: SummaryCardsProps) {
+  const { formatCost } = useCurrency();
   const activeDays = daily.filter((entry) => entry.totalTokens > 0).length;
   const avgDailyCost = activeDays > 0 ? totals.totalCost / activeDays : 0;
 
@@ -18,12 +20,12 @@ export function SummaryCards({ daily, totals }: SummaryCardsProps) {
     },
     {
       label: 'Total Cost',
-      value: formatUSD(totals.totalCost),
+      value: formatCost(totals.totalCost),
       color: '#10b981'
     },
     {
       label: 'Avg Daily Cost',
-      value: formatUSD(avgDailyCost),
+      value: formatCost(avgDailyCost),
       color: '#8b5cf6'
     },
     {

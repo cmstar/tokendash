@@ -1,25 +1,25 @@
+import './appSettings.js';
+import { modelCost, getPricingExchangeRate } from '../shared/modelPricing.js';
 import { existsSync, statSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { openSqliteReader } from './sqliteReader.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { DailyEntry, DailyResponse, ProjectsResponse, BlockEntry, BlocksResponse } from '../shared/types.js';
 import { type BlockGranularity } from './claudeJsonlParser.js';
 
 // ---------------------------------------------------------------------------
-// OpenCode SQLite format
+// OpenCode SQLite 格式
 //
-// Database: ~/.local/share/opencode/opencode.db
-// Table: message
-// Column: data (JSON) with structure:
+// 数据库：~/.local/share/opencode/opencode.db
+// 新版表 session_message（type 列区分消息类型），旧版表 message（data.role）。
+// assistant 行 data 结构：
 //   {
-//     "role": "assistant",
 //     "time": { "created": <ms>, "completed": <ms> },
-//     "modelID": "glm-4.7",
-//     "providerID": "zhipuai-coding-plan",
+//     "model": { "id": "step-5-preview-free", "providerID": "opencode", "variant": "medium" },
 //     "tokens": { "input": N, "output": N, "reasoning": N, "cache": { "read": N, "write": N } },
-//     "cost": N,
-//     "path": { "cwd": "/path/to/project" }
+//     "cost": N
 //   }
+// 项目目录来自 session_v2.directory（按 session_id 关联），旧版回退 data.path.cwd。
 // ---------------------------------------------------------------------------
 
 const OPENCODE_DB = join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
@@ -46,6 +46,7 @@ interface OpenCodeTokenEvent {
   cost: number;
   model: string;
   project: string;
+  sessionId: string;
 }
 
 interface TokenAccumulator {
@@ -58,24 +59,41 @@ interface TokenAccumulator {
 }
 
 // ---------------------------------------------------------------------------
-// SQLite query helper
+// SQLite 查询
 // ---------------------------------------------------------------------------
 
-function queryOpenCodeDB(sql: string): string {
-  return execSync(`sqlite3 -json "${OPENCODE_DB}" "${sql}"`, {
-    encoding: 'utf-8',
-    maxBuffer: 50 * 1024 * 1024,
-    timeout: 10000,
-  });
+interface RawEventRow {
+  data: string;
+  directory?: string | null;
+  session_id?: string | null;
+}
+
+function queryOpenCodeRows(): RawEventRow[] {
+  const db = openSqliteReader(OPENCODE_DB);
+  try {
+    const tables = new Set(db.all("SELECT name FROM sqlite_master WHERE type = 'table'").map(row => row.name));
+    if (tables.has('session_message')) {
+      return db.all(
+        `SELECT m.data AS data, m.session_id AS session_id, s.directory AS directory
+         FROM session_message m
+         LEFT JOIN session_v2 s ON s.id = m.session_id
+         WHERE m.type = 'assistant'`,
+      ) as unknown as RawEventRow[];
+    }
+    if (tables.has('message')) {
+      return db.all(
+        `SELECT data, session_id FROM message WHERE json_extract(data, '$.role') = 'assistant'`,
+      ) as unknown as RawEventRow[];
+    }
+    return [];
+  } finally {
+    db.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Parse all token events from message table
 // ---------------------------------------------------------------------------
-
-interface RawMessage {
-  data: string;
-}
 
 interface OpenCodeEventCache {
   fingerprint: string;
@@ -107,7 +125,8 @@ export function clearOpenCodeEventCache(): void {
 }
 
 export function parseAllOpenCodeEvents(project?: string | null): OpenCodeTokenEvent[] {
-  const fingerprint = sourceFingerprint();
+  const source = sourceFingerprint();
+  const fingerprint = source === null ? null : `${source}:${getPricingExchangeRate()}`;
   if (fingerprint === null) return [];
 
   if (openCodeEventCache?.fingerprint === fingerprint) {
@@ -116,16 +135,9 @@ export function parseAllOpenCodeEvents(project?: string | null): OpenCodeTokenEv
       : openCodeEventCache.events;
   }
 
-  let raw: string;
+  let rows: RawEventRow[];
   try {
-    raw = queryOpenCodeDB(`SELECT data FROM message WHERE json_extract(data, '$.role') = 'assistant'`);
-  } catch {
-    return [];
-  }
-
-  let rows: RawMessage[];
-  try {
-    rows = JSON.parse(raw) as RawMessage[];
+    rows = queryOpenCodeRows();
   } catch {
     return [];
   }
@@ -144,13 +156,17 @@ export function parseAllOpenCodeEvents(project?: string | null): OpenCodeTokenEv
     const cache = (tokens.cache as Record<string, unknown>) || {};
     const time = (data.time as Record<string, unknown>) || {};
     const path = (data.path as Record<string, unknown>) || {};
+    const model = (data.model as Record<string, unknown>) || {};
 
     const input = Number(tokens.input ?? 0);
-    const output = Number(tokens.output ?? 0);
+    const reasoning = Number(tokens.reasoning ?? 0);
+    const output = Number(tokens.output ?? 0) + reasoning;
     const cacheRead = Number(cache.read ?? 0);
     const cacheWrite = Number(cache.write ?? 0);
 
     if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0) continue;
+
+    const projectDir = row.directory ?? path.cwd ?? '';
 
     events.push({
       timestampMs: Number(time.created ?? 0),
@@ -158,10 +174,11 @@ export function parseAllOpenCodeEvents(project?: string | null): OpenCodeTokenEv
       outputTokens: Math.max(0, output),
       cacheReadTokens: Math.max(0, cacheRead),
       cacheWriteTokens: Math.max(0, cacheWrite),
-      totalTokens: Math.max(0, input + output + cacheRead),
-      cost: Math.max(0, Number(data.cost ?? 0)),
-      model: String(data.modelID ?? 'unknown'),
-      project: String(path.cwd ?? ''),
+      totalTokens: Math.max(0, input + output + cacheRead + cacheWrite),
+      cost: modelCost(String(model.id ?? data.modelID ?? 'unknown'), input, output, cacheRead, cacheWrite, Number(time.created ?? 0)) ?? Math.max(0, Number(data.cost ?? 0)),
+      model: String(model.id ?? data.modelID ?? 'unknown'),
+      project: String(projectDir ?? ''),
+      sessionId: String(row.session_id ?? ''),
     });
   }
 
@@ -286,8 +303,10 @@ export function getDailyResponse(options?: OpenCodeAggregateOptions): DailyRespo
           cacheCreationTokens: m.cacheCreationTokens,
           cacheReadTokens: m.cacheReadTokens,
           cost: m.cost,
+          estimatedTokens: 0,
         };
       }),
+      estimatedTokens: 0,
     });
   }
   daily.sort((a, b) => a.date.localeCompare(b.date));
@@ -301,6 +320,7 @@ export function getDailyResponse(options?: OpenCodeAggregateOptions): DailyRespo
       cacheReadTokens: totalsAcc.cacheReadTokens,
       totalTokens: totalsAcc.totalTokens,
       totalCost: totalsAcc.cost,
+      estimatedTokens: 0,
     },
   };
 }
@@ -338,6 +358,7 @@ export function getProjectsResponse(options?: OpenCodeAggregateOptions): Project
         totalCost: 0,
         modelsUsed: [],
         modelBreakdowns: [],
+        estimatedTokens: 0,
       };
       projects[projectName].push(dayEntry);
     }
@@ -363,6 +384,7 @@ export function getProjectsResponse(options?: OpenCodeAggregateOptions): Project
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
         cost: 0,
+        estimatedTokens: 0,
       };
       dayEntry.modelBreakdowns.push(breakdown);
     }

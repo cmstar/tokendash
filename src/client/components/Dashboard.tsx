@@ -9,34 +9,23 @@ import { fetchDaily, fetchProjects, fetchBlocks, fetchAgents, fetchAnalytics } f
 import type { AgentsResponse } from '../api/client.js';
 import { useCcusageData } from '../hooks/useCcusageData.js';
 import { useLocalStorageState } from '../hooks/useLocalStorageState.js';
-import { formatDate, formatTokens, formatUSD, formatPercent, formatProjectName } from '../utils/formatters.js';
-import { cacheHitRate as calculateCacheHitRate, costSavedByCache } from '../utils/cacheCalculations.js';
+import { formatDate, formatTokens, formatPercent, formatProjectName } from '../utils/formatters.js';
+import { useCurrency } from '../hooks/useCurrency.js';
+import { cacheHitRate as calculateCacheHitRate } from '../utils/cacheCalculations.js';
 import { modelTokenMode, modelBreakdownTokens } from '../utils/modelAggregation.js';
 
+import { getPricing, GO_PRICING_SOURCE } from '../../shared/modelPricing.js';
 import { shortModelName } from '../utils/modelNames.js';
 import { CustomDateRangePicker } from './CustomDateRangePicker.js';
 import { filterByTime, dateRangeError, localDateKey, type CustomDateRange, type TimeRangeKey } from '../../shared/dateRange.js';
 import { AnalyticsSection } from './AnalyticsSection.js';
 import { CodexDataSourcesSettings } from './CodexDataSourcesSettings.js';
+import { AGENT_LABELS } from '../utils/agentAggregation.js';
 import { SessionAnalyticsSection } from './SessionAnalyticsSection.js';
 import type { DailyEntry, MetricMode } from '../../shared/types.js';
 
 const C = ['#4f46e5', '#10b981', '#f59e0b', '#ec4899', '#0ea5e9', '#8b5cf6', '#ef4444', '#14b8a6'];
 
-// Model pricing display (USD per 1M tokens) — keep in sync with claudeJsonlParser.ts
-const MODEL_PRICING_DISPLAY: Record<string, { input: string; cache: string; output: string }> = {
-  'gpt-5.5': { input: '5.00', cache: '0.50', output: '30.00' },
-  'gpt-5.4': { input: '2.50', cache: '0.25', output: '15.00' },
-  'Opus 4.6': { input: '15.00', cache: '1.50', output: '75.00' },
-  'Sonnet 4.6': { input: '3.00', cache: '0.30', output: '15.00' },
-  'Sonnet 4.5': { input: '3.00', cache: '0.30', output: '15.00' },
-  'Haiku 4.5': { input: '0.80', cache: '0.08', output: '4.00' },
-  'Opus 3': { input: '15.00', cache: '1.50', output: '75.00' },
-  'Sonnet 3.5': { input: '3.00', cache: '0.30', output: '15.00' },
-  'Haiku 3.5': { input: '0.80', cache: '0.08', output: '4.00' },
-  'Haiku 3': { input: '0.25', cache: '0.03', output: '1.25' },
-  'default': { input: '3.00', cache: '0.30', output: '15.00' },
-};
 const TIME_RANGES = [
   { key: 'today', label: 'Today', days: 1 },
   { key: '7d', label: '7D', days: 7 },
@@ -145,6 +134,7 @@ function filterProjectDaily(projects: Record<string, DailyEntry[]>, project: str
           m.cacheReadTokens += e.cacheReadTokens;
           m.totalTokens += e.totalTokens;
           m.totalCost += e.totalCost;
+          m.estimatedTokens += e.estimatedTokens ?? 0;
           for (const b of e.modelBreakdowns) {
             const existing = m.modelBreakdowns.find(x => x.modelName === b.modelName);
             if (existing) {
@@ -153,6 +143,8 @@ function filterProjectDaily(projects: Record<string, DailyEntry[]>, project: str
               existing.cacheCreationTokens += b.cacheCreationTokens;
               existing.cacheReadTokens += b.cacheReadTokens;
               existing.cost += b.cost;
+              if (existing.totalTokens !== undefined) existing.totalTokens += b.totalTokens ?? 0;
+              existing.estimatedTokens += b.estimatedTokens ?? 0;
             } else {
               m.modelBreakdowns.push({ ...b });
             }
@@ -172,8 +164,8 @@ export function Dashboard() {
   const [agentsInfo, setAgentsInfo] = useState<AgentsResponse | null>(null);
   const [agentsLoading, setAgentsLoading] = useState(true);
 
-  const [agent, setAgent] = useLocalStorageState<'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi'>('dashboard_agent', 'claude');
-  const hasNoAnalytics = agent === 'codex' || agent === 'opencode' || agent === 'pi';
+  const [agent, setAgent] = useLocalStorageState<'all' | 'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi'>('dashboard_agent', 'claude');
+  const hasNoAnalytics = agent === 'codex';
 
   const [timeRange, setTimeRange] = useLocalStorageState<TimeRangeKey>('dashboard_timeRange', '30d');
   const [storedCustomRange, setCustomRange] = useLocalStorageState<CustomDateRange>('dashboard_customRange', {
@@ -205,8 +197,8 @@ export function Dashboard() {
       .then((info) => {
         setAgentsInfo(info);
         // Fallback stored agent if unavailable
-        if (info.available.length > 0 && !info.available.includes(agent)) {
-          setAgent(info.default as 'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi');
+        if (agent !== 'all' && info.available.length > 0 && !info.available.includes(agent)) {
+          setAgent(info.default as 'all' | 'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi');
         }
       })
       .catch(() => {})
@@ -227,7 +219,7 @@ export function Dashboard() {
     void refreshAgents();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const showAgentSwitcher = (agentsInfo?.available.length ?? 0) > 1;
+  const showAgentSwitcher = (agentsInfo?.available.length ?? 0) > 0;
 
   const dailyData = useCcusageData(useCallback((refresh = false) => fetchDaily(agent, refresh), [agent]));
   const projectsData = useCcusageData(useCallback((refresh = false) => fetchProjects(agent, refresh), [agent]));
@@ -253,8 +245,9 @@ export function Dashboard() {
     ? dailyData.lastUpdated.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : null;
   const [metric, setMetric] = useLocalStorageState<MetricMode>('dashboard_metric', 'tokens');
+  const { formatCost, currency, setCurrency, exchangeRate } = useCurrency();
 
-  const handleAgentChange = (a: 'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi') => {
+  const handleAgentChange = (a: 'all' | 'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi') => {
     setAgent(a);
     setProject('');
     setAgentMenuOpen(false);
@@ -373,14 +366,16 @@ export function Dashboard() {
       cacheReadTokens: acc.cacheReadTokens + d.cacheReadTokens,
       totalTokens: acc.totalTokens + d.totalTokens,
       totalCost: acc.totalCost + d.totalCost,
-    }), { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, totalCost: 0 });
+      estimatedTokens: acc.estimatedTokens + d.estimatedTokens,
+    }), { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, totalCost: 0, estimatedTokens: 0 });
   }, [filteredDaily]);
 
   const activeDays = useMemo(() => filteredDaily.filter(d => d.totalTokens > 0).length, [filteredDaily]);
   // Avg daily code changes from analytics
   const avgDailyChanges = useMemo(() => {
     if (!analyticsData.data || analyticsData.data.codeChangeTrend.length === 0) return null;
-    const trend = analyticsData.data.codeChangeTrend;
+    const trend = analyticsData.data.codeChangeTrend.filter(day => day.linesAdded + day.linesDeleted > 0);
+    if (!trend.length) return null;
     const totalLines = trend.reduce((s, d) => s + d.linesAdded + d.linesDeleted, 0);
     return Math.round(totalLines / trend.length);
   }, [analyticsData.data]);
@@ -391,10 +386,13 @@ export function Dashboard() {
   const cacheSavings = useMemo(() => {
     return {
       tokensSaved: totals.cacheReadTokens,
-      costSaved: costSavedByCache(totals.cacheReadTokens),
+      costSaved: filteredDaily.reduce((sum, day) => sum + day.modelBreakdowns.reduce((value, model) => {
+        const pricing = getPricing(model.modelName);
+        return value + (pricing?.cacheRead !== undefined ? model.cacheReadTokens * (pricing.input - pricing.cacheRead) / 1_000_000 : 0);
+      }, 0), 0),
       hitRate: cacheHitRate
     };
-  }, [totals.cacheReadTokens, cacheHitRate]);
+  }, [filteredDaily, totals.cacheReadTokens, cacheHitRate, exchangeRate]);
 
   // Model aggregation
   const modelAgg = useMemo(() => {
@@ -533,12 +531,12 @@ export function Dashboard() {
   };
 
   const renderAgentSwitcher = () => {
-    const availableAgents = (agentsInfo?.available ?? []).filter(a => a in AGENT_CONFIG);
+    const availableAgents = ['all', ...(agentsInfo?.available ?? []).filter(a => a in AGENT_CONFIG)];
     const currentIndex = Math.max(0, availableAgents.indexOf(agent));
-    const current = AGENT_CONFIG[agent] || AGENT_CONFIG.claude;
+    const current = agent === 'all' ? { label: '所有 Agent' } : AGENT_CONFIG[agent] || AGENT_CONFIG.claude;
     const selectAt = (index: number) => {
       const next = availableAgents[index];
-      if (next) handleAgentChange(next as 'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi');
+      if (next) handleAgentChange(next as 'all' | 'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi');
       agentTriggerRef.current?.focus();
     };
     const onTriggerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -557,7 +555,7 @@ export function Dashboard() {
         </button>
         {agentMenuOpen && <div role="menu" aria-label="Available agents" className="absolute right-0 top-[calc(100%+8px)] z-40 w-[196px] rounded-[10px] border border-stone-200/90 bg-white p-1.5 shadow-[0_12px_28px_rgba(41,37,36,.14)]">
         {availableAgents.map((a) => {
-          const cfg = AGENT_CONFIG[a]!;
+          const cfg = a === 'all' ? { label: '所有 Agent' } : AGENT_CONFIG[a]!;
           const isActive = agent === a;
           return (
             <button
@@ -589,20 +587,22 @@ export function Dashboard() {
     <button
       type="button"
       onClick={() => setShowDataSourceSettings(true)}
-      title="Configure Codex data sources"
+      title="设置"
       className="flex items-center justify-center w-8 h-8 rounded-lg text-stone-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
-      aria-label="Configure Codex data sources"
+      aria-label="设置"
     >
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 16v-2m8-6h-2M6 12H4m12.95 4.95-1.414-1.414M8.464 8.464 7.05 7.05m9.9 0-1.414 1.414M8.464 15.536 7.05 16.95M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" /></svg>
+      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m9.75 3-.5 2a7.2 7.2 0 0 0-1.5.87l-2-.57L3.5 9.2 5 10.65a7.2 7.2 0 0 0 0 1.7L3.5 13.8l2.25 3.9 2-.57a7.2 7.2 0 0 0 1.5.87l.5 2h4.5l.5-2a7.2 7.2 0 0 0 1.5-.87l2 .57 2.25-3.9-1.5-1.45a7.2 7.2 0 0 0 0-1.7l1.5-1.45-2.25-3.9-2 .57A7.2 7.2 0 0 0 14.75 5l-.5-2h-4.5Z" /><circle cx="12" cy="11.5" r="3" strokeWidth={2} /></svg>
     </button>
   );
 
   const renderSettingsModal = () => (
+    <>
     <CodexDataSourcesSettings
       open={showDataSourceSettings}
       onClose={() => setShowDataSourceSettings(false)}
       onSaved={handleSettingsSaved}
     />
+    </>
   );
 
   if (coreLoading) {
@@ -733,22 +733,21 @@ export function Dashboard() {
                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-50 w-[320px] bg-white rounded-xl shadow-[0_8px_30px_rgba(120,113,108,0.15)] border border-stone-200/60 p-4">
                         <div className="absolute -top-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-white border-l border-t border-stone-200/60 rotate-45" />
                         <div className="flex items-center gap-2 mb-2">
-                          <span className="text-[11px] font-bold text-stone-500 uppercase tracking-wider">Pricing Formula</span>
+                          <a href={GO_PRICING_SOURCE} target="_blank" rel="noreferrer" className="text-[11px] font-bold text-indigo-600">模型计费依据 · OpenCode Go</a>
                         </div>
                         <div className="text-[10px] font-mono text-stone-400 bg-stone-50 rounded-lg px-2.5 py-1.5 mb-2.5 leading-relaxed">
-                          Cost = (input - cached) x in_price + cached x cache_price + output x out_price
+                          费用 = 非缓存输入 × 输入价 + 缓存读取 × 读取价 + 缓存写入 × 写入价 + 输出 × 输出价
                         </div>
-                        <div className="text-[10px] text-stone-400 mb-1.5 font-semibold">Per 1M tokens (USD)</div>
+                        <div className="text-[10px] text-stone-400 mb-1.5 font-semibold">每百万 token（当前显示币种）；分级模型显示基础价</div>
                         <div className="space-y-1">
                           {modelAgg.slice(0, 4).map((m, i) => {
-                            const pricing = MODEL_PRICING_DISPLAY[m.name] || MODEL_PRICING_DISPLAY.default;
+                            const rawModel = filteredDaily.flatMap(day => day.modelBreakdowns).find(model => shortModelName(model.modelName) === m.name)?.modelName ?? m.name;
+                            const pricing = getPricing(rawModel);
                             return (
                               <div key={m.name} className="flex items-center gap-1.5 text-[10px]">
                                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: C[i % C.length] }} />
                                 <span className="font-semibold text-stone-600 w-20 truncate">{m.name}</span>
-                                <span className="text-stone-400 font-mono">in ${pricing.input}</span>
-                                <span className="text-emerald-500 font-mono">ca ${pricing.cache}</span>
-                                <span className="text-stone-400 font-mono">out ${pricing.output}</span>
+                                <span className="text-stone-400 font-mono">{pricing ? '输入 ' + formatCost(pricing.input) + ' / 读取 ' + (pricing.cacheRead === undefined ? '未配置' : formatCost(pricing.cacheRead)) + ' / 输出 ' + formatCost(pricing.output) : '价格未配置'}</span>
                               </div>
                             );
                           })}
@@ -759,28 +758,45 @@ export function Dashboard() {
                 )}
               </div>
             </div>
+
+            <div className="w-px h-10 bg-stone-200/60 hidden sm:block"></div>
+            <div className="flex flex-col gap-2">
+              <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider">Currency</span>
+              <div className="flex items-center gap-1.5">
+                <FilterTab options={[{ key: 'USD', label: '$ USD' }, { key: 'CNY', label: '¥ CNY' }]} value={currency} onChange={v => setCurrency(v as 'USD' | 'CNY')} />
+
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
+      <p className="mb-4 text-xs text-stone-500">费用按模型名称估算，忽略供应商；Go 模型使用 Go 单价，其他已配置模型使用参考单价。不是订阅账单。缓存节省按基础单价估算。</p>
+      {filteredDaily.some(day => day.modelBreakdowns.some(model => !getPricing(model.modelName))) && <p role="status" className="mb-4 text-xs text-amber-700">部分模型价格未配置：有会话费用时保留原值，否则未计价；合计可能不完整。</p>}
       {metric === 'sessions' ? (
         <SessionAnalyticsSection key={`${agent}:${project}:${timeRange}:${customRange.startDate}:${customRange.endDate}`} agent={agent} project={project} range={timeRange} startDate={timeRange === 'custom' ? customRange.startDate : undefined} endDate={timeRange === 'custom' ? customRange.endDate : undefined} refreshVersion={sessionRefreshVersion} />
       ) : <>
+      {agent === 'all' && <p className="mb-4 text-xs text-stone-500">汇总来源：{(agentsInfo?.available ?? []).map(source => AGENT_LABELS[source] || source).join('、')}。代码变更与工具分析仅统计支持该能力的来源。</p>}
       {/* KPI Row */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+      <div className={`grid grid-cols-2 ${avgDailyChanges === null ? 'md:grid-cols-4' : 'md:grid-cols-5'} gap-4 mb-6`}>
         <KPICard
           label={isTokens ? 'Total tokens' : 'Total cost'}
-          value={isTokens ? formatTokens(totals.totalTokens) : formatUSD(totals.totalCost)}
+          value={isTokens ? formatTokens(totals.totalTokens) : formatCost(totals.totalCost)}
+          sub={isTokens && totals.estimatedTokens > 0 ? `≈ ${formatTokens(totals.estimatedTokens)} estimated` : undefined}
           accent
-          insight={isTokens ? 'The primary volume indicator for the selected period.' : 'Estimated spend for the selected period.'}
+          insight={isTokens
+            ? (totals.estimatedTokens > 0
+              ? 'Volume includes estimates for local models whose provider does not report usage.'
+              : 'The primary volume indicator for the selected period.')
+            : 'Estimated spend for the selected period.'}
         />
         <KPICard
           label={isTokens ? 'Daily avg' : 'Daily avg cost'}
-          value={isTokens ? formatTokens(activeDays > 0 ? totals.totalTokens / activeDays : 0) : formatUSD(activeDays > 0 ? totals.totalCost / activeDays : 0)}
+          value={isTokens ? formatTokens(activeDays > 0 ? totals.totalTokens / activeDays : 0) : formatCost(activeDays > 0 ? totals.totalCost / activeDays : 0)}
           sub={`${activeDays} active days`}
           insight={isTokens ? 'Baseline for typical daily volume.' : 'Baseline for typical daily spend.'}
         />
-        <KPICard label="Avg daily changes" value={avgDailyChanges !== null ? avgDailyChanges.toLocaleString() + ' lines' : '-'} insight="Average lines changed per active day." />
+        {avgDailyChanges !== null && <KPICard label="Avg daily changes" value={avgDailyChanges.toLocaleString() + ' lines'} insight="Average lines changed per active day." />}
         <KPICard label="Cache hit" value={formatPercent(cacheHitRate)} insight="Higher hit rate reduces cost." />
         <KPICard label="Output/Input" value={formatPercent(outputRatio)} insight="Ratio of generation to context." />
       </div>
@@ -792,8 +808,8 @@ export function Dashboard() {
             <BarChart data={isToday ? hourlyModelTrendData : modelTrendData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" vertical={false} />
               <XAxis dataKey={isToday ? "hour" : "date"} tick={{ fill: '#78716c', fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: '#78716c', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => isTokens ? formatTokens(v) : formatUSD(v)} />
-              <Tooltip content={<TooltipBox fmt={isTokens ? formatTokens : formatUSD} />} />
+              <YAxis tick={{ fill: '#78716c', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => isTokens ? formatTokens(v) : formatCost(v)} />
+              <Tooltip content={<TooltipBox fmt={isTokens ? formatTokens : formatCost} />} />
               <Legend wrapperStyle={{ fontSize: 11, paddingTop: 12 }} />
               {(isToday ? hourlyModelAgg : modelAgg).slice(0, 6).map((m, i) => (
                 <Bar key={m.name} dataKey={m.name} stackId="1" fill={C[i % C.length]} fillOpacity={0.85} />
@@ -806,7 +822,7 @@ export function Dashboard() {
           <div className="flex items-center gap-6 mb-4 px-4 py-3 bg-emerald-50/50 rounded-xl border border-emerald-100/50">
             <div className="flex flex-col">
               <span className="text-[11px] font-bold text-emerald-600/70 uppercase tracking-wider mb-0.5">Est. Cost Saved</span>
-              <span className="text-2xl font-black text-emerald-600 tracking-tight">{formatUSD(cacheSavings.costSaved)}</span>
+              <span className="text-2xl font-black text-emerald-600 tracking-tight">{formatCost(cacheSavings.costSaved)}</span>
             </div>
             <div className="w-px h-8 bg-emerald-200/50"></div>
             <div className="flex flex-col">
@@ -863,7 +879,7 @@ export function Dashboard() {
                   <Cell key={index} fill={C[index % C.length]} fillOpacity={0.85} stroke="transparent" />
                 ))}
               </Pie>
-              <Tooltip content={<TooltipBox fmt={isTokens ? formatTokens : formatUSD} />} />
+              <Tooltip content={<TooltipBox fmt={isTokens ? formatTokens : formatCost} />} />
               <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: 11 }} />
             </PieChart>
           </ResponsiveContainer>
@@ -882,9 +898,9 @@ export function Dashboard() {
               <ResponsiveContainer width="100%" height={280}>
                 <BarChart data={projectPieData.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 8, top: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: '#78716c', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => isTokens ? formatTokens(v) : formatUSD(v)} />
+                  <XAxis type="number" tick={{ fill: '#78716c', fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => isTokens ? formatTokens(v) : formatCost(v)} />
                   <YAxis type="category" dataKey="name" tick={{ fill: '#57534e', fontSize: 11 }} axisLine={false} tickLine={false} width={110} />
-                  <Tooltip content={<TooltipBox fmt={isTokens ? formatTokens : formatUSD} />} />
+                  <Tooltip content={<TooltipBox fmt={isTokens ? formatTokens : formatCost} />} />
                   <Bar dataKey={dataKey} radius={[0, 6, 6, 0]} maxBarSize={24}>
                     {projectPieData.slice(0, 8).map((_, index) => (
                       <Cell key={index} fill={C[index % C.length]} fillOpacity={0.85} />
@@ -943,7 +959,7 @@ export function Dashboard() {
                           >
                             {val > 0 && (
                               <div className="absolute opacity-0 group-hover:opacity-100 z-20 bg-stone-900 text-white text-[10px] px-2 py-1 rounded bottom-full mb-1.5 left-1/2 -translate-x-1/2 pointer-events-none whitespace-nowrap shadow-lg font-mono">
-                                {hourIdx}:00 - {isTokens ? formatTokens(val) + ' tokens' : formatUSD(val)}
+                                {hourIdx}:00 - {isTokens ? formatTokens(val) + ' tokens' : formatCost(val)}
                               </div>
                             )}
                           </div>
@@ -992,8 +1008,8 @@ export function Dashboard() {
                   <td className="py-2.5 px-4 text-right font-mono text-stone-500">{formatTokens(d.inputTokens)}</td>
                   <td className="py-2.5 px-4 text-right font-mono text-stone-500">{formatTokens(d.outputTokens)}</td>
                   <td className="py-2.5 px-4 text-right font-mono text-indigo-500/70">{formatTokens(d.cacheReadTokens)}</td>
-                  <td className="py-2.5 px-4 text-right font-mono font-semibold text-indigo-600">{formatTokens(d.totalTokens)}</td>
-                  <td className="py-2.5 px-4 text-right font-mono font-medium text-stone-600 bg-stone-50/40">{formatUSD(d.totalCost)}</td>
+                  <td className="py-2.5 px-4 text-right font-mono font-semibold text-indigo-600" title={d.estimatedTokens > 0 ? `Includes ${formatTokens(d.estimatedTokens)} estimated (provider did not report usage)` : undefined}>{formatTokens(d.totalTokens)}{d.estimatedTokens > 0 ? ' ≈' : ''}</td>
+                  <td className="py-2.5 px-4 text-right font-mono font-medium text-stone-600 bg-stone-50/40">{formatCost(d.totalCost)}</td>
                   <td className="py-2.5 px-4 text-stone-500 font-medium truncate max-w-[200px]">{d.modelsUsed.map(shortModelName).join(', ')}</td>
                 </tr>
               ))}

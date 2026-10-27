@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TokenDash</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: rgba(250, 250, 250, 0.98);
+        --fg: #1c1c1e;
+        --muted: #6e6e73;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: rgba(28, 28, 30, 0.98);
+          --fg: #f2f2f7;
+          --muted: #98989d;
+        }
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        font-family: -apple-system, "Ubuntu", "Segoe UI", sans-serif;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .card {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 28px 24px;
+        border-radius: 10px;
+        background: var(--bg);
+        color: var(--fg);
+        text-align: center;
+      }
+      .title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .message {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .spinner {
+        width: 18px;
+        height: 18px;
+        margin: 0 auto 12px;
+        border: 2px solid var(--muted);
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .error .spinner {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card" id="card">
+      <div class="spinner"></div>
+      <div class="title" id="title">正在启动本地服务</div>
+      <div class="message" id="message">首次启动需要解析历史用量数据，请稍候。</div>
+    </div>
+    <script>
+      // The stub only exists until the local daemon answers on 127.0.0.1; then the
+      // window is rewritten to the daemon-served popover page (same origin as /api).
+      const title = document.getElementById('title');
+      const message = document.getElementById('message');
+      const card = document.getElementById('card');
+
+      async function poll() {
+        try {
+          const status = await window.__TAURI__.core.invoke('popover_status');
+          if (status.state === 'ready') {
+            location.replace(status.url);
+            return false;
+          }
+          if (status.state === 'error') {
+            card.classList.add('error');
+            title.textContent = '本地服务启动失败';
+            message.textContent = status.message;
+            return false;
+          }
+          title.textContent = '正在启动本地服务';
+          message.textContent = status.message || '首次启动需要解析历史用量数据，请稍候。';
+          return true;
+        } catch (error) {
+          title.textContent = '无法连接本地服务';
+          message.textContent = String(error);
+          return true;
+        }
+      }
+
+      let alive = true;
+      (async () => {
+        while (alive) {
+          alive = await poll();
+          if (!alive) break;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      })();
+    </script>
+  </body>
+</html>

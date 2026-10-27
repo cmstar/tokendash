@@ -1,77 +1,10 @@
-/**
- * Codex token pricing configuration.
- *
- * Pricing formula (aligned with OpenAI's GPT-5.6 pricing tiers and ccusage):
- *   cost = (inputTokens - cachedInputTokens) * input_rate
- *        + cachedInputTokens * cached_rate
- *        + outputTokens * output_rate
- *
- * Reasoning tokens are NOT billed separately (included in outputTokens).
- *
- * Update rates from https://developers.openai.com/api/docs/models/ when models change.
- * All prices are USD per 1M tokens.
- */
-
-interface ModelPricing {
-  inputPer1M: number;
-  cachedInputPer1M: number;
-  outputPer1M: number;
-  longContextInputPer1M?: number;
-  longContextCachedInputPer1M?: number;
-  longContextOutputPer1M?: number;
-}
+import './appSettings.js';
+import { getPricing, normalizePricingModel, modelCost } from '../shared/modelPricing.js';
 
 export const CODEX_LONG_CONTEXT_THRESHOLD = 272_000;
 
-const MODEL_PRICING: Record<string, ModelPricing> = {
-  'gpt-5.6-sol': {
-    inputPer1M: 5.00,
-    cachedInputPer1M: 0.50,
-    outputPer1M: 30.00,
-    longContextInputPer1M: 10.00,
-    longContextCachedInputPer1M: 1.00,
-    longContextOutputPer1M: 45.00,
-  },
-  'gpt-5.6-terra': {
-    inputPer1M: 2.50,
-    cachedInputPer1M: 0.25,
-    outputPer1M: 15.00,
-    longContextInputPer1M: 5.00,
-    longContextCachedInputPer1M: 0.50,
-    longContextOutputPer1M: 22.50,
-  },
-  'gpt-5.6-luna': {
-    inputPer1M: 1.00,
-    cachedInputPer1M: 0.10,
-    outputPer1M: 6.00,
-    longContextInputPer1M: 2.00,
-    longContextCachedInputPer1M: 0.20,
-    longContextOutputPer1M: 9.00,
-  },
-  'gpt-5.5': {
-    inputPer1M: 5.00,
-    cachedInputPer1M: 0.50,
-    outputPer1M: 30.00,
-  },
-  'gpt-5.4': {
-    inputPer1M: 2.50,
-    cachedInputPer1M: 0.25,
-    outputPer1M: 15.00,
-  },
-  'gpt-5.4-mini': {
-    inputPer1M: 0.75,
-    cachedInputPer1M: 0.075,
-    outputPer1M: 4.50,
-  },
-};
-
-const DEFAULT_PRICING: ModelPricing = {
-  inputPer1M: 2.50,
-  cachedInputPer1M: 0.25,
-  outputPer1M: 15.00,
-};
-
 interface TokenCounts {
+  timestamp?: string;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -94,8 +27,8 @@ export function normalizeCodexModelName(model: string): string {
   return stripped === 'gpt-5.6' ? 'gpt-5.6-sol' : stripped;
 }
 
-export function isLongContextCodexRequest(inputTokens: number): boolean {
-  return inputTokens > CODEX_LONG_CONTEXT_THRESHOLD;
+export function isLongContextCodexRequest(inputTokens: number, model?: string): boolean {
+  return inputTokens > (getPricing(model ?? 'gpt-5.6-sol')?.threshold ?? CODEX_LONG_CONTEXT_THRESHOLD);
 }
 
 /**
@@ -105,7 +38,8 @@ export function isLongContextCodexRequest(inputTokens: number): boolean {
  */
 export function calculateCost(tokens: TokenCounts, models: Set<string>): number {
   const model = normalizeCodexModelName([...models][0] ?? '');
-  const pricing = MODEL_PRICING[model] ?? DEFAULT_PRICING;
+  if (tokens.timestamp) return modelCost(model, Math.max(0, tokens.inputTokens - tokens.cachedInputTokens), tokens.outputTokens, tokens.cachedInputTokens, 0, tokens.timestamp) ?? 0;
+  const pricing = getModelPricing(model);
 
   const longInput = Math.min(tokens.longContextInputTokens ?? 0, tokens.inputTokens);
   const longCached = Math.min(tokens.longContextCachedInputTokens ?? 0, tokens.cachedInputTokens, longInput);
@@ -132,6 +66,14 @@ export function calculateCost(tokens: TokenCounts, models: Set<string>): number 
   return inputCost + cachedCost + outputCost + longInputCost + longCachedCost + longOutputCost;
 }
 
-export function getModelPricing(model: string): ModelPricing {
-  return MODEL_PRICING[normalizeCodexModelName(model)] ?? DEFAULT_PRICING;
+export function getModelPricing(model: string) {
+  const pricing = getPricing(normalizePricingModel(model));
+  return {
+    inputPer1M: pricing?.input ?? 0,
+    cachedInputPer1M: pricing?.cacheRead ?? 0,
+    outputPer1M: pricing?.output ?? 0,
+    longContextInputPer1M: pricing?.long?.input,
+    longContextCachedInputPer1M: pricing?.long?.cacheRead,
+    longContextOutputPer1M: pricing?.long?.output,
+  };
 }

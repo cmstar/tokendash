@@ -211,9 +211,11 @@ test.describe('Dashboard refresh', () => {
 test.describe('Codex data-source settings', () => {
   test('defaults to including archives and persists disabling and re-enabling them', async ({ page }) => {
     await setupPage(page, { agents: ['codex'] });
-    await page.getByRole('button', { name: 'Configure Codex data sources' }).click();
+    await page.getByRole('button', { name: '设置', exact: true }).click();
     const toggle = page.getByRole('switch', { name: 'Include archived conversations' });
     await expect(toggle).toBeChecked();
+    await expect(page.getByLabel('显示币种')).toBeVisible();
+    await expect(page.getByLabel('人民币汇率')).toBeVisible();
     for (const enabled of [false, true]) {
       await toggle.setChecked(enabled);
       const saved = page.waitForRequest(request => request.url().includes('/api/settings/codex-data-paths') && request.method() === 'PUT');
@@ -223,7 +225,7 @@ test.describe('Codex data-source settings', () => {
       await refreshed;
       await expect(page.getByText('Saved. Dashboard data is refreshing from the configured sources.')).toBeVisible();
       await page.getByRole('button', { name: 'Close settings' }).click();
-      await page.getByRole('button', { name: 'Configure Codex data sources' }).click();
+      await page.getByRole('button', { name: '设置', exact: true }).click();
       await expect(toggle).toBeChecked({ checked: enabled });
     }
   });
@@ -231,10 +233,10 @@ test.describe('Codex data-source settings', () => {
   test('opens custom path settings and saves configured sources', async ({ page }) => {
     await setupPage(page);
     const settingsRequest = page.waitForResponse(response => response.url().includes('/api/settings') && response.request().method() === 'GET');
-    await page.locator('button[aria-label="Configure Codex data sources"]').click();
+    await page.locator('button[aria-label="设置"]').click();
     await settingsRequest;
 
-    await expect(page.locator('text=Codex data sources')).toBeVisible();
+    await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
     await expect(page.locator('text=Multiple paths are supported')).toBeVisible();
     await expect(page.locator('textarea')).toHaveValue('/Users/test/.custom-codex');
 
@@ -344,6 +346,24 @@ test.describe('Time range: Custom', () => {
     });
     await page.getByRole('button', { name: 'Sessions', exact: true }).click();
     await request;
+    const modelRequest = page.waitForRequest(req => {
+      const url = new URL(req.url());
+      return url.pathname === '/api/session-analytics' && Boolean(url.searchParams.get('model'));
+    });
+    await page.getByLabel('会话模型').selectOption({ index: 1 });
+    const modelUrl = new URL((await modelRequest).url());
+    expect(modelUrl.searchParams.get('range')).toBe('custom');
+    expect(modelUrl.searchParams.get('startDate')).toBe(startDate);
+    expect(modelUrl.searchParams.get('endDate')).toBe(endDate);
+    const statusRequest = page.waitForRequest(req => {
+      const url = new URL(req.url());
+      return url.pathname === '/api/session-analytics' && url.searchParams.get('status') === 'complete';
+    });
+    await page.getByLabel('会话状态').selectOption('complete');
+    const statusUrl = new URL((await statusRequest).url());
+    expect(statusUrl.searchParams.get('model')).toBe(modelUrl.searchParams.get('model'));
+    expect(statusUrl.searchParams.get('startDate')).toBe(startDate);
+    expect(statusUrl.searchParams.get('endDate')).toBe(endDate);
     await page.getByRole('button', { name: '7D', exact: true }).click();
     await expect(page.getByLabel('Start date', { exact: true })).toHaveCount(0);
   });
@@ -420,11 +440,10 @@ test.describe('Agent switching', () => {
     await expect(page.getByRole('menuitemradio', { name: 'OpenClaw' })).not.toBeVisible();
   });
 
-  test('hides agent switcher when only one agent available', async ({ page }) => {
+  test('仅一个来源时仍可切换到所有 Agent', async ({ page }) => {
     await setupPage(page, { agents: ['claude'] });
 
-    // No agent buttons should be visible at all
-    await expect(page.locator('button:has-text("Claude Code")')).not.toBeVisible();
+    await expect(page.locator('button:has-text("Claude Code")')).toBeVisible();
     await expect(page.locator('button:has-text("OpenCode")')).not.toBeVisible();
     await expect(page.locator('button:has-text("Codex")')).not.toBeVisible();
     await expect(page.locator('button:has-text("OpenClaw")')).not.toBeVisible();
@@ -701,7 +720,7 @@ test.describe('Error handling', () => {
   test('no console errors on load', async ({ page }) => {
     const errors: string[] = [];
     page.on('console', msg => {
-      if (msg.type() === 'error') errors.push(msg.text());
+      if (msg.type() === 'error') errors.push(`${msg.text()} (${msg.location().url})`);
     });
 
     await setupPage(page);

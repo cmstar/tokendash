@@ -1,53 +1,14 @@
+import { claudeUsageLines } from './claudeUsageLines.js';
+import './appSettings.js';
+import { modelCost, getPricingExchangeRate } from '../shared/modelPricing.js';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { DailyEntry, DailyResponse, ProjectsResponse, Totals, BlockEntry } from '../shared/types.js';
 import { buildUsageFileIndex } from './usageFileIndex.js';
 
-// ---------------------------------------------------------------------------
-// Model pricing (USD per 1M tokens)
-// Update from https://docs.anthropic.com/en/docs/about-claude/models when needed
-// ---------------------------------------------------------------------------
-
-interface ModelPricing {
-  inputPer1M: number;
-  cacheCreationPer1M: number;
-  cacheReadPer1M: number;
-  outputPer1M: number;
-}
-
-const MODEL_PRICING: Record<string, ModelPricing> = {
-  // Claude 4.6
-  'claude-opus-4-6': { inputPer1M: 15, cacheCreationPer1M: 18.75, cacheReadPer1M: 1.50, outputPer1M: 75 },
-  'claude-sonnet-4-6': { inputPer1M: 3, cacheCreationPer1M: 3.75, cacheReadPer1M: 0.30, outputPer1M: 15 },
-  // Claude 4.5
-  'claude-sonnet-4-5-20250514': { inputPer1M: 3, cacheCreationPer1M: 3.75, cacheReadPer1M: 0.30, outputPer1M: 15 },
-  'claude-haiku-4-5-20251001': { inputPer1M: 0.80, cacheCreationPer1M: 1, cacheReadPer1M: 0.08, outputPer1M: 4 },
-  // Older Claude models
-  'claude-3-5-sonnet-20241022': { inputPer1M: 3, cacheCreationPer1M: 3.75, cacheReadPer1M: 0.30, outputPer1M: 15 },
-  'claude-3-5-haiku-20241022': { inputPer1M: 0.80, cacheCreationPer1M: 1, cacheReadPer1M: 0.08, outputPer1M: 4 },
-  'claude-3-opus-20240229': { inputPer1M: 15, cacheCreationPer1M: 18.75, cacheReadPer1M: 1.50, outputPer1M: 75 },
-  'claude-3-haiku-20240307': { inputPer1M: 0.25, cacheCreationPer1M: 0.30, cacheReadPer1M: 0.03, outputPer1M: 1.25 },
-};
-
-const DEFAULT_PRICING: ModelPricing = { inputPer1M: 3, cacheCreationPer1M: 3.75, cacheReadPer1M: 0.30, outputPer1M: 15 };
-
-function getPricing(model: string): ModelPricing {
-  // Try exact match first, then prefix match
-  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
-  const lower = model.toLowerCase();
-  for (const key of Object.keys(MODEL_PRICING)) {
-    if (lower.startsWith(key) || lower.includes(key)) return MODEL_PRICING[key];
-  }
-  return DEFAULT_PRICING;
-}
-
-export function calculateCost(inputTokens: number, cacheReadTokens: number, outputTokens: number, model: string, cacheCreationTokens = 0): number {
-  const p = getPricing(model);
-  return (inputTokens / 1_000_000) * p.inputPer1M
-    + (cacheCreationTokens / 1_000_000) * p.cacheCreationPer1M
-    + (cacheReadTokens / 1_000_000) * p.cacheReadPer1M
-    + (outputTokens / 1_000_000) * p.outputPer1M;
+export function calculateCost(inputTokens: number, cacheReadTokens: number, outputTokens: number, model: string, cacheCreationTokens = 0, timestamp?: string): number {
+  return modelCost(model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, timestamp) ?? 0;
 }
 
 function totalClaudeTokens(inputTokens: number, outputTokens: number, cacheCreationTokens: number, cacheReadTokens: number): number {
@@ -103,7 +64,7 @@ interface ClaudeFileAggregate {
 // ---------------------------------------------------------------------------
 
 const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
-const CLAUDE_INDEX_VERSION = 'claude-aggregate-v3-1min';
+const CLAUDE_INDEX_VERSION = 'claude-aggregate-v4-usage-snapshots';
 
 const projectNameCache = new Map<string, string>();
 
@@ -201,8 +162,10 @@ function parseClaudeUsageFile(file: ClaudeUsageFileRef): ClaudeFileAggregate {
     return summary;
   }
   const projectName = extractProjectName(file.projectDir);
+  const lines = content.split('\n');
+  const usageLines = claudeUsageLines(lines);
 
-  for (const line of content.split('\n')) {
+  for (const [lineIndex, line] of lines.entries()) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
@@ -211,6 +174,7 @@ function parseClaudeUsageFile(file: ClaudeUsageFileRef): ClaudeFileAggregate {
 
     if (obj.type !== 'assistant' || !obj.message) continue;
     const msg = obj.message as Record<string, unknown>;
+    if (!usageLines.has(lineIndex)) continue;
     const usage = (msg.usage as Record<string, number>) || {};
 
     const inputTokens = usage.input_tokens || 0;
@@ -223,6 +187,7 @@ function parseClaudeUsageFile(file: ClaudeUsageFileRef): ClaudeFileAggregate {
 
     const timestamp = obj.timestamp as string;
     const parsedUsage = {
+      timestamp,
       model: (msg.model as string) || 'unknown',
       inputTokens,
       outputTokens,
@@ -248,7 +213,7 @@ function parseClaudeUsageFile(file: ClaudeUsageFileRef): ClaudeFileAggregate {
 function loadClaudeAggregates(): ClaudeFileAggregate[] {
   const result = buildUsageFileIndex<ClaudeFileAggregate, ClaudeUsageFileRef>({
     cacheName: 'claude-usage',
-    parserVersion: CLAUDE_INDEX_VERSION,
+    parserVersion: `${CLAUDE_INDEX_VERSION}:pricing-v2:${getPricingExchangeRate()}`,
     files: collectClaudeUsageFiles(),
     parseFile: parseClaudeUsageFile,
   });
@@ -336,6 +301,7 @@ function toDailyEntry(agg: DayAgg): DailyEntry {
     cacheCreationTokens: m.cacheCreation,
     cacheReadTokens: m.cacheRead,
     cost: m.cost,
+    estimatedTokens: 0,
   }));
 
   return {
@@ -348,6 +314,7 @@ function toDailyEntry(agg: DayAgg): DailyEntry {
     totalCost: Math.round(agg.totalCost * 10000) / 10000,
     modelsUsed: [...agg.models.keys()],
     modelBreakdowns,
+    estimatedTokens: 0,
   };
 }
 
@@ -368,7 +335,7 @@ function claudeBucketFor(map: Record<string, ClaudeAggregateBucket>, key: string
   return map[key];
 }
 
-function addUsageToBucket(bucket: ClaudeAggregateBucket, usage: Omit<ParsedUsage, 'projectDir' | 'timestamp'>): void {
+function addUsageToBucket(bucket: ClaudeAggregateBucket, usage: Omit<ParsedUsage, 'projectDir'>): void {
   bucket.inputTokens += usage.inputTokens;
   bucket.outputTokens += usage.outputTokens;
   bucket.cacheCreationTokens += usage.cacheCreationTokens;
@@ -385,6 +352,7 @@ function addUsageToBucket(bucket: ClaudeAggregateBucket, usage: Omit<ParsedUsage
     usage.outputTokens,
     usage.model,
     usage.cacheCreationTokens,
+    usage.timestamp,
   );
   bucket.totalCost += cost;
 
@@ -459,7 +427,8 @@ export function getDailyResponse(project?: string | null, tz = DEFAULT_TZ): Dail
     cacheReadTokens: acc.cacheReadTokens + d.cacheReadTokens,
     totalTokens: acc.totalTokens + d.totalTokens,
     totalCost: acc.totalCost + d.totalCost,
-  }), { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, totalCost: 0 });
+    estimatedTokens: acc.estimatedTokens + d.estimatedTokens,
+  }), { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, totalTokens: 0, totalCost: 0, estimatedTokens: 0 });
 
   return { daily, totals };
 }

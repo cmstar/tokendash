@@ -15,8 +15,8 @@ describe('shortModelName', () => {
   });
 
   it('extracts version from unrecognized claude model IDs', () => {
-    expect(shortModelName('claude-sonnet-4-5')).toBe('Sonnet 4');
-    expect(shortModelName('claude-opus-4-5')).toBe('Opus 4');
+    expect(shortModelName('claude-sonnet-4-5')).toBe('Sonnet 4.5');
+    expect(shortModelName('claude-opus-4-5')).toBe('Opus 4.5');
   });
 
   it('returns type without version for versionless claude IDs', () => {

@@ -12,6 +12,7 @@ const MODEL_SHORT_NAMES: Record<string, string> = {
 };
 
 export function shortModelName(modelId: string): string {
+  modelId = modelId.trim().toLowerCase().split('/').pop()!;
   if (MODEL_SHORT_NAMES[modelId]) {
     return MODEL_SHORT_NAMES[modelId];
   }
@@ -19,9 +20,9 @@ export function shortModelName(modelId: string): string {
   const match = modelId.match(/^claude-(opus|sonnet|haiku)-?[\d.]*-?/);
   if (match) {
     const modelType = match[1];
-    const versionMatch = modelId.match(/(\d+[\d.]*)/);
+    const versionMatch = modelId.replace(/-\d{8}$/, '').match(/(\d+(?:[.-]\d+)?)/);
     if (versionMatch) {
-      return `${modelType.charAt(0).toUpperCase() + modelType.slice(1)} ${versionMatch[1]}`;
+      return `${modelType.charAt(0).toUpperCase() + modelType.slice(1)} ${versionMatch[1].replace('-', '.')}`;
     }
     return modelType.charAt(0).toUpperCase() + modelType.slice(1);
   }

@@ -1,5 +1,18 @@
 # Changelog
 
+### v1.10.0
+- **Windows desktop support** — add a Windows 10/11 x64 NSIS installer with system-tray usage, a popover panel, per-user launch at login, quota notifications, and packaged daemon resources. Node.js 20.10+ is required; the installer provisions WebView2 when needed.
+- **Ubuntu desktop support** — ship deb and AppImage packages with the Tauri tray panel, activity ranges, usage breakdowns, trends, settings, and quota status. Thanks to @ReachForStar for PR #39.
+- **Cross-agent statistics** — aggregate agent usage, display model-based reference costs in USD or CNY, inspect Pi/OpenCode sessions, and mark estimated token usage for local Pi models that do not report usage.
+- **Compatibility and accuracy** — retain Node 20.10+ through a SQLite CLI fallback, preserve legacy OpenCode session IDs, tolerate partially written Pi logs, and keep live token totals fresh through indexed parsing.
+- **Reliable desktop startup** — validate Node runtimes, handle Unicode/space-containing user paths, quote launch-at-login commands, and manage native child processes on each operating system.
+- **Complete coordinated releases** — require macOS DMG/Sparkle, Linux deb/AppImage, and Windows installers from the same source commit, publish checksums and a manifest, and gate npm OIDC publishing and public GitHub Releases on all artifacts being present and validated. Windows installers are currently unsigned; macOS retains the existing signing/Sparkle setup.
+
+### v1.9.1
+- **Accurate Claude Code usage totals** — reconcile repeated message usage snapshots across content blocks instead of summing them repeatedly, while retaining the greatest cumulative output snapshot. Thanks to @roy-tong for PR #37.
+- **Correct historical totals after upgrading** — invalidate persisted Claude usage aggregates so unchanged transcripts are recalculated with the corrected accounting rule.
+- **Preserved session reasoning** — retain thinking content from all blocks of a message without counting additional model calls or duplicating token costs; keep assistant replies and tool calls visible.
+
 ### v1.8.10
 - **Cache-aligned automatic refreshes** — keep web timers, native background refreshes, popover opens, and optional pulse sampling on cache-aware requests; only an explicit manual refresh bypasses usage and quota caches.
 - **Faster OpenCode dashboard loading** — share one parsed event set across daily, project, and block aggregations until the SQLite database or its WAL changes, avoiding repeated multi-second full-table scans.
