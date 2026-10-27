@@ -1,4 +1,4 @@
-import { dateRangeError } from '../../shared/dateRange.js';
+import { dateRangeError, localDateKey, recentDaysError } from '../../shared/dateRange.js';
 import { type Request, type Response } from 'express';
 import { cache } from '../cache.js';
 import { validateSessionAnalytics, validateSessionDetail } from '../../shared/schemas.js';
@@ -12,7 +12,7 @@ import {
 } from '../sessionAnalyticsParser.js';
 import type { SessionStatus } from '../../shared/types.js';
 
-const RANGES = new Set<SessionAnalyticsRange>(['today', '7d', '30d', '60d', 'all', 'custom']);
+const RANGES = new Set<SessionAnalyticsRange>(['today', '2d', '3d', '7d', '30d', '60d', 'all', 'custom', 'recent']);
 const STATUSES = new Set<SessionStatus>(['active', 'complete', 'interrupted', 'unknown']);
 
 function queryValue(value: unknown): string | undefined {
@@ -30,7 +30,7 @@ function parseFilters(req: Request, res: Response): SessionAnalyticsFilters | un
   const range = queryValue(req.query.range) || 'all';
   const status = queryValue(req.query.status);
   if (!RANGES.has(range as SessionAnalyticsRange)) {
-    res.status(400).json({ error: 'Invalid range', hint: 'Use today, 7d, 30d, 60d, all, or custom.' });
+    res.status(400).json({ error: 'Invalid range', hint: 'Use today, 2d, 3d, 7d, 30d, 60d, all, custom, or recent with days.' });
     return undefined;
   }
   if (status && !STATUSES.has(status as SessionStatus)) {
@@ -38,6 +38,14 @@ function parseFilters(req: Request, res: Response): SessionAnalyticsFilters | un
     return undefined;
   }
   const customRange = { startDate: queryValue(req.query.startDate) || '', endDate: queryValue(req.query.endDate) || '' };
+  const days = Number(queryValue(req.query.days));
+  if (range === 'recent') {
+    const error = recentDaysError(days);
+    if (error) {
+      res.status(400).json({ error: 'Invalid number of days', hint: error });
+      return undefined;
+    }
+  }
   if (range === 'custom') {
     const error = dateRangeError(customRange);
     if (error) {
@@ -47,6 +55,7 @@ function parseFilters(req: Request, res: Response): SessionAnalyticsFilters | un
   }
   return {
     ...(range === 'custom' ? customRange : {}),
+    ...(range === 'recent' ? { days } : {}),
     project: queryValue(req.query.project),
     range: range as SessionAnalyticsRange,
     model: queryValue(req.query.model),
@@ -59,7 +68,8 @@ function parseFilters(req: Request, res: Response): SessionAnalyticsFilters | un
 
 function cacheKey(agent: string, filters: SessionAnalyticsFilters, revision: string): string {
   // Revision is source metadata (path, mtime, and size) and not user content.
-  return `session-analytics:${agent}:${filters.project || 'all'}:${filters.range || 'all'}:${filters.startDate || ''}:${filters.endDate || ''}:${filters.model || 'all'}:${filters.status || 'all'}:${filters.query || ''}:${filters.cursor || ''}:${filters.limit || 20}:${revision}`;
+  const today = filters.range && filters.range !== 'all' && filters.range !== 'custom' ? localDateKey() : '';
+  return `session-analytics:${agent}:${filters.project || 'all'}:${filters.range || 'all'}:${filters.startDate || ''}:${filters.endDate || ''}:${filters.days || ''}:${today}:${filters.model || 'all'}:${filters.status || 'all'}:${filters.query || ''}:${filters.cursor || ''}:${filters.limit || 20}:${revision}`;
 }
 
 function fetchAnalytics(agent: string, filters: SessionAnalyticsFilters, revision: string) {

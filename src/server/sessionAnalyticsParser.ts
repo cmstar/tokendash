@@ -1,4 +1,4 @@
-import { isInCustomRange, type TimeRangeKey } from '../shared/dateRange.js';
+import { isInCustomRange, timeRangeDates, type TimeRangeKey } from '../shared/dateRange.js';
 import { detectAvailableAgents } from './agentDetection.js';
 import { projectName as canonicalProjectName } from '../shared/projectNames.js';
 import { getPricingExchangeRate, normalizePricingModel } from '../shared/modelPricing.js';
@@ -32,6 +32,7 @@ export interface SessionAnalyticsFilters {
   range?: SessionAnalyticsRange;
   startDate?: string;
   endDate?: string;
+  days?: number;
   model?: string;
   status?: SessionStatus;
   query?: string;
@@ -1070,15 +1071,6 @@ function loadSource(agent: string, revision: string): SessionSource {
   return source;
 }
 
-function rangeStart(range: SessionAnalyticsRange): number | undefined {
-  if (range === 'all' || range === 'custom') return undefined;
-  const now = new Date();
-  const midnight = Date.parse(dailyKey(now.toISOString()) + 'T00:00:00+08:00');
-  if (range === 'today') return midnight;
-  const days = range === '7d' ? 7 : range === '30d' ? 30 : 60;
-  return midnight - (days - 1) * 24 * 60 * 60 * 1000;
-}
-
 function decodeCursor(cursor: string | undefined): string | undefined {
   if (!cursor || cursor.length > 1024) return undefined;
   try {
@@ -1094,22 +1086,29 @@ function encodeCursor(session: SessionSummary): string {
 
 function filteredSessions(source: SessionSource, filters: SessionAnalyticsFilters): SessionAnalyticsIndexedSession[] {
   const query = filters.query?.trim().toLowerCase();
-  const since = rangeStart(filters.range || 'all');
+  const relative = filters.range && filters.range !== 'all' && filters.range !== 'custom';
+  const dates = relative ? timeRangeDates(filters.range!, { startDate: '', endDate: '', days: filters.days }) : undefined;
+  const since = dates ? Date.parse(`${dates.startDate}T00:00:00`) : undefined;
+  const end = dates ? new Date(`${dates.endDate}T00:00:00`) : undefined;
+  end?.setDate(end.getDate() + 1);
+  const until = end?.getTime();
+  const inWindow = (timestamp: string) => since !== undefined && until !== undefined
+    && Date.parse(timestamp) >= since && Date.parse(timestamp) < until;
   return source.sessions
     .filter(({ summary }) => !filters.project || summary.project === filters.project)
     .filter(({ summary }) => !filters.model || summary.models.includes(filters.model))
     .filter(({ summary }) => !filters.status || summary.status === filters.status)
     .filter(({ summary, events }) => filters.range === 'custom'
       ? isInCustomRange(summary.startedAt, { startDate: filters.startDate || '', endDate: filters.endDate || '' })
-      : !since || Date.parse(summary.endedAt || summary.startedAt) >= since || events.some(event => Date.parse(event.timestamp) >= since))
+      : since === undefined || inWindow(summary.endedAt || summary.startedAt) || events.some(event => inWindow(event.timestamp)))
     .filter(({ summary }) => !query
       || summary.id.toLowerCase().includes(query)
       || summary.project?.toLowerCase().includes(query)
       || summary.title?.toLowerCase().includes(query)
       || summary.description?.toLowerCase().includes(query))
     .map(session => {
-      if (!since) return session;
-      const events = session.events.filter(event => Date.parse(event.timestamp) >= since);
+      if (since === undefined) return session;
+      const events = session.events.filter(event => inWindow(event.timestamp));
       const calls = events.filter(event => event.type === 'llm_call');
       const last = session.events.reduce((latest, event) => Math.max(latest, Date.parse(event.timestamp)), Date.parse(session.summary.endedAt || session.summary.startedAt));
       return { ...session, events, summary: {

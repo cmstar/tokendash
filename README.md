@@ -246,6 +246,14 @@ use `--ignore-scripts` while preparing the source.
 first and keep the checkout and its `node_modules` in place, or use the tarball
 method above for an independent installation.
 
+### Time ranges
+
+Use Today, 2D, 3D, 7D, 30D, 60D, or ALL for quick filtering. Custom offers
+two modes: an inclusive date range, or Last X days with suggested day counts
+and a manual number input. Click Apply to update the dashboard and Sessions.
+Recent-day windows include today and move forward each day; the selected
+mode and value are remembered when you reload the page.
+
 ### Codex history and caching
 
 Codex history statistics include both `.jsonl` and Zstandard-compressed

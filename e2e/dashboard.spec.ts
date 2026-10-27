@@ -322,6 +322,114 @@ test.describe('Time range: 30D', () => {
 });
 
 test.describe('Time range: Custom', () => {
+  for (const days of [2, 3]) {
+    test(`${days}D filters totals and sends the shortcut to Sessions`, async ({ page }) => {
+      await setupPage(page);
+      await page.getByRole('button', { name: `${days}D`, exact: true }).click();
+      await expect(page.locator('table tbody tr')).toHaveCount(days);
+      const total = generateDailyResponse('claude').daily.slice(-days).reduce((sum, day) => sum + day.totalTokens, 0);
+      await expect(page.locator('span:text-is("Total tokens")').locator('..')).toContainText(formatTokens(total));
+      const request = page.waitForRequest(req => new URL(req.url()).pathname === '/api/session-analytics'
+        && new URL(req.url()).searchParams.get('range') === `${days}d`);
+      await page.getByRole('button', { name: 'Sessions', exact: true }).click();
+      await request;
+    });
+  }
+
+  test('supports suggested and manually entered days, persists the mode, and forwards it to Sessions', async ({ page }) => {
+    await setupPage(page);
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    await page.getByRole('button', { name: 'Last X days', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Quick choices', exact: true }).selectOption('14');
+    await expect(page.getByLabel('Number of days', { exact: true })).toHaveValue('14');
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page.locator('table tbody tr')).toHaveCount(14);
+    await page.getByLabel('Number of days', { exact: true }).fill('5');
+    await expect(page.locator('table tbody tr')).toHaveCount(14);
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page.locator('table tbody tr')).toHaveCount(5);
+    const total = generateDailyResponse('claude').daily.slice(-5).reduce((sum, day) => sum + day.totalTokens, 0);
+    await expect(page.locator('span:text-is("Total tokens")').locator('..')).toContainText(formatTokens(total));
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Last X days', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('Number of days', { exact: true })).toHaveValue('5');
+    await expect(page.locator('table tbody tr')).toHaveCount(5);
+    await page.getByRole('button', { name: '7D', exact: true }).click();
+    await expect(page.locator('table tbody tr')).toHaveCount(7);
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    await expect(page.getByLabel('Number of days', { exact: true })).toHaveValue('5');
+    await expect(page.locator('table tbody tr')).toHaveCount(5);
+    const request = page.waitForRequest(req => {
+      const url = new URL(req.url());
+      return url.pathname === '/api/session-analytics' && url.searchParams.get('range') === 'recent' && url.searchParams.get('days') === '5';
+    });
+    await page.getByRole('button', { name: 'Sessions', exact: true }).click();
+    const url = new URL((await request).url());
+    expect(url.searchParams.has('startDate')).toBe(false);
+    const modelRequest = page.waitForRequest(req => {
+      const url = new URL(req.url());
+      return url.pathname === '/api/session-analytics' && Boolean(url.searchParams.get('model'));
+    });
+    await page.getByLabel('会话模型').selectOption({ index: 1 });
+    expect(new URL((await modelRequest).url()).searchParams.get('days')).toBe('5');
+  });
+
+  test('rejects invalid days and keeps the applied data while switching modes', async ({ page }) => {
+    await setupPage(page);
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    await page.getByLabel('Start date', { exact: true }).fill(localDateKey());
+    await page.getByLabel('End date', { exact: true }).fill(localDateKey());
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await page.getByRole('button', { name: 'Last X days', exact: true }).click();
+    for (const days of ['', '0', '-2', '1.5']) {
+      await page.getByLabel('Number of days', { exact: true }).fill(days);
+      await expect(page.getByRole('button', { name: 'Apply', exact: true })).toBeDisabled();
+      await expect(page.getByRole('alert')).toBeVisible();
+      await expect(page.locator('table tbody tr')).toHaveCount(1);
+    }
+    await page.getByLabel('Number of days', { exact: true }).fill('3');
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page.locator('table tbody tr')).toHaveCount(3);
+    await page.getByRole('button', { name: 'Date range', exact: true }).click();
+    await expect(page.getByLabel('Start date', { exact: true })).toHaveValue(localDateKey());
+    await expect(page.locator('table tbody tr')).toHaveCount(3);
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page.locator('table tbody tr')).toHaveCount(1);
+  });
+
+  test('moves the applied recent window forward when the calendar day changes', async ({ page }) => {
+    await setupPage(page);
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    await page.getByRole('button', { name: 'Last X days', exact: true }).click();
+    await page.getByLabel('Number of days', { exact: true }).fill('3');
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(page.locator('table tbody tr')).toHaveCount(3);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    await page.clock.setFixedTime(tomorrow);
+    await page.getByRole('button', { name: '刷新数据（每 60 秒自动刷新）' }).click();
+    // The fixed fixture has no entry for tomorrow, leaving today and yesterday.
+    await expect(page.locator('table tbody tr')).toHaveCount(2);
+    await expect(page.getByText(/^Applied: Last 3 days/)).toContainText(localDateKey(tomorrow));
+    await expect(page.getByLabel('Number of days', { exact: true })).toHaveValue('3');
+  });
+
+  test('keeps custom controls within a narrow viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await setupPage(page);
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    await page.getByRole('button', { name: 'Last X days', exact: true }).click();
+    const controls = page.getByRole('group', { name: 'Custom range mode' }).locator('..');
+    const box = await controls.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    await expect(page.getByLabel('Number of days', { exact: true })).toBeVisible();
+    await controls.screenshot({ path: 'tmp/time-range-validation/mobile.png' });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await controls.screenshot({ path: 'tmp/time-range-validation/desktop.png' });
+  });
+
   test('filters inclusive dates, persists them, and passes them to Sessions', async ({ page }) => {
     await setupPage(page);
     const entries = generateDailyResponse('claude').daily.slice(2, 5);

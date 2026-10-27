@@ -1,4 +1,4 @@
-import { filterByTime, type TimeRangeKey, type CustomDateRange } from '../../shared/dateRange.js';
+import { filterByTime, localDateKey, type TimeRangeKey, type CustomTimeRange } from '../../shared/dateRange.js';
 import { useMemo } from 'react';
 import {
   AreaChart, Area, LineChart, Line,
@@ -48,16 +48,17 @@ function formatNumber(n: number): string {
 interface AnalyticsSectionProps {
   analytics: AnalyticsResponse;
   timeRange: TimeRangeKey;
-  customRange: CustomDateRange;
+  customRange: CustomTimeRange;
 }
 
 // --- Component ---
 
 export function AnalyticsSection({ analytics, timeRange, customRange }: AnalyticsSectionProps) {
+  const today = localDateKey();
   const { codeChangeTrend, toolCallTrend } = analytics;
 
-  const filteredChanges = useMemo(() => filterByTime(codeChangeTrend, timeRange, customRange).filter(day => day.linesAdded + day.linesDeleted > 0), [codeChangeTrend, timeRange, customRange]);
-  const filteredToolTrend = useMemo(() => filterByTime(toolCallTrend, timeRange, customRange), [toolCallTrend, timeRange, customRange]);
+  const filteredChanges = useMemo(() => filterByTime(codeChangeTrend, timeRange, customRange).filter(day => day.linesAdded + day.linesDeleted > 0), [codeChangeTrend, timeRange, customRange, today]);
+  const filteredToolTrend = useMemo(() => filterByTime(toolCallTrend, timeRange, customRange), [toolCallTrend, timeRange, customRange, today]);
 
   // Get top 6 tools for the trend chart
   const topTools = useMemo(() => {

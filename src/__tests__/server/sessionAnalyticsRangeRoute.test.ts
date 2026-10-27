@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response } from 'express';
 
 const mocks = vi.hoisted(() => ({ analytics: vi.fn(() => ({ sessions: [] })) }));
@@ -21,6 +21,33 @@ async function request(query: Record<string, unknown>) {
 
 describe('custom session range requests', () => {
   beforeEach(() => { cache.clear(); vi.clearAllMocks(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each(['2d', '3d'])('accepts the %s shortcut', async range => {
+    const res = await request({ range });
+    expect(res.status).not.toHaveBeenCalled();
+    expect(mocks.analytics).toHaveBeenCalledWith('claude', expect.objectContaining({ range }), 'test-revision');
+  });
+
+  it.each([undefined, '', '0', '-1', '1.5', 'Infinity', 'nope', ['2'], '9007199254740991'])('rejects invalid recent days %j', async days => {
+    const res = await request({ range: 'recent', days });
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mocks.analytics).not.toHaveBeenCalled();
+  });
+
+  it('keeps recent day counts and calendar days separate in the cache', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 27, 23, 59));
+    for (const days of ['5', '14', '5']) {
+      const res = await request({ range: 'recent', days });
+      expect(res.status).not.toHaveBeenCalled();
+    }
+    expect(mocks.analytics).toHaveBeenCalledTimes(2);
+    vi.setSystemTime(new Date(2026, 9, 28, 0, 1));
+    await request({ range: 'recent', days: '5' });
+    expect(mocks.analytics).toHaveBeenCalledTimes(3);
+    expect(mocks.analytics).toHaveBeenLastCalledWith('claude', expect.objectContaining({ range: 'recent', days: 5 }), 'test-revision');
+  });
 
   it.each([
     {},

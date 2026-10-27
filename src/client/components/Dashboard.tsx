@@ -16,8 +16,8 @@ import { modelTokenMode, modelBreakdownTokens } from '../utils/modelAggregation.
 
 import { getPricing, GO_PRICING_SOURCE } from '../../shared/modelPricing.js';
 import { shortModelName } from '../utils/modelNames.js';
-import { CustomDateRangePicker } from './CustomDateRangePicker.js';
-import { filterByTime, dateRangeError, localDateKey, type CustomDateRange, type TimeRangeKey } from '../../shared/dateRange.js';
+import { CustomTimeRangePicker } from './CustomTimeRangePicker.js';
+import { filterByTime, customTimeRangeError, localDateKey, type CustomTimeRange, type TimeRangeKey } from '../../shared/dateRange.js';
 import { AnalyticsSection } from './AnalyticsSection.js';
 import { CodexDataSourcesSettings } from './CodexDataSourcesSettings.js';
 import { AGENT_LABELS } from '../utils/agentAggregation.js';
@@ -28,6 +28,8 @@ const C = ['#4f46e5', '#10b981', '#f59e0b', '#ec4899', '#0ea5e9', '#8b5cf6', '#e
 
 const TIME_RANGES = [
   { key: 'today', label: 'Today', days: 1 },
+  { key: '2d', label: '2D', days: 2 },
+  { key: '3d', label: '3D', days: 3 },
   { key: '7d', label: '7D', days: 7 },
   { key: '30d', label: '30D', days: 30 },
   { key: '60d', label: '60D', days: 60 },
@@ -118,7 +120,7 @@ function ProjectSelect({ projects, value, onChange }: { projects: string[]; valu
 
 /* ---- Aggregation helpers ---- */
 
-function filterProjectDaily(projects: Record<string, DailyEntry[]>, project: string, range: TimeRangeKey, custom: CustomDateRange): DailyEntry[] {
+function filterProjectDaily(projects: Record<string, DailyEntry[]>, project: string, range: TimeRangeKey, custom: CustomTimeRange): DailyEntry[] {
   if (!project) {
     // Merge all projects by date
     const merged: Record<string, DailyEntry> = {};
@@ -168,12 +170,14 @@ export function Dashboard() {
   const hasNoAnalytics = agent === 'codex';
 
   const [timeRange, setTimeRange] = useLocalStorageState<TimeRangeKey>('dashboard_timeRange', '30d');
-  const [storedCustomRange, setCustomRange] = useLocalStorageState<CustomDateRange>('dashboard_customRange', {
+  const today = localDateKey();
+  const [storedCustomRange, setCustomRange] = useLocalStorageState<CustomTimeRange>('dashboard_customRange', {
+    mode: 'dates', days: 30,
     startDate: localDateKey(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() - 29)),
     endDate: localDateKey(),
   });
-  const customRange = useMemo(() => storedCustomRange && !dateRangeError(storedCustomRange)
-    ? storedCustomRange : { startDate: localDateKey(), endDate: localDateKey() }, [storedCustomRange]);
+  const customRange = useMemo(() => storedCustomRange && !customTimeRangeError(storedCustomRange, today)
+    ? storedCustomRange : { mode: 'dates' as const, days: 30, startDate: today, endDate: today }, [storedCustomRange, today]);
   const [project, setProject] = useLocalStorageState('dashboard_project', '');
   const [showPricing, setShowPricing] = useState(false);
   const [showDataSourceSettings, setShowDataSourceSettings] = useState(false);
@@ -277,7 +281,7 @@ export function Dashboard() {
       return filterProjectDaily(projectsData.data.projects, project, timeRange, customRange);
     }
     return [];
-  }, [projectsData.data, dailyData.data, project, timeRange, customRange]);
+  }, [projectsData.data, dailyData.data, project, timeRange, customRange, today]);
 
   const isToday = timeRange === 'today';
 
@@ -440,7 +444,7 @@ export function Dashboard() {
       })
       .filter(d => d.tokens > 0)
       .sort((a, b) => b.tokens - a.tokens);
-  }, [projectsData.data, timeRange, customRange]);
+  }, [projectsData.data, timeRange, customRange, today]);
 
   // Cache trend data
   const cacheTrendData = useMemo(() => filteredDaily.map(d => ({
@@ -464,21 +468,9 @@ export function Dashboard() {
   const heatmapData = useMemo(() => {
     if (!blocksData.data) return null;
 
-    // Day-level cutoff: 7D = today + past 6 days, 30D = today + past 29 days
     const now = new Date();
     const todayStr = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-    let cutoffDate: Date;
-    if (timeRange === 'all') {
-      cutoffDate = new Date(0); // include everything
-    } else {
-      const range = TIME_RANGES.find(t => t.key === timeRange);
-      const daysBack = range ? range.days - 1 : 29;
-      cutoffDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack);
-    }
-
-    const filteredBlocks = timeRange === 'custom'
-      ? filterByTime(blocksData.data.blocks, timeRange, customRange)
-      : blocksData.data.blocks.filter(b => new Date(b.startTime) >= cutoffDate);
+    const filteredBlocks = filterByTime(blocksData.data.blocks, timeRange, customRange);
 
     // Create 7x24 grid
     const grid: number[][] = Array(7).fill(0).map(() => Array(24).fill(0));
@@ -499,7 +491,7 @@ export function Dashboard() {
       if (grid[day][hour] > maxVal) maxVal = grid[day][hour];
     }
     return { grid, maxVal };
-  }, [blocksData.data, timeRange, customRange, isTokens]);
+  }, [blocksData.data, timeRange, customRange, isTokens, today]);
 
 
   const AGENT_CONFIG: Record<string, { label: string; activeColor: string; icon: ReactElement }> = {
@@ -699,11 +691,15 @@ export function Dashboard() {
         </div>
 
         <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center gap-6 p-4 bg-white rounded-2xl border border-stone-200/50 shadow-sm w-fit">
-            <div className="flex flex-col gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-6 p-4 bg-white rounded-2xl border border-stone-200/50 shadow-sm w-fit">
+            <div className="flex min-w-0 flex-col gap-2">
               <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider">Time range</span>
-              <FilterTab options={TIME_RANGES} value={timeRange} onChange={v => setTimeRange(v as TimeRangeKey)} />
-              {timeRange === 'custom' && <CustomDateRangePicker value={customRange} onApply={setCustomRange} />}
+              <FilterTab options={TIME_RANGES} value={timeRange === 'recent' ? 'custom' : timeRange}
+                onChange={v => setTimeRange(v === 'custom' && customRange.mode === 'recent' ? 'recent' : v as TimeRangeKey)} />
+              {(timeRange === 'custom' || timeRange === 'recent') && <CustomTimeRangePicker value={customRange} onApply={value => {
+                setCustomRange(value);
+                setTimeRange(value.mode === 'recent' ? 'recent' : 'custom');
+              }} />}
             </div>
 
             {projectList.length > 0 && (
@@ -774,7 +770,7 @@ export function Dashboard() {
       <p className="mb-4 text-xs text-stone-500">费用按模型名称估算，忽略供应商；Go 模型使用 Go 单价，其他已配置模型使用参考单价。不是订阅账单。缓存节省按基础单价估算。</p>
       {filteredDaily.some(day => day.modelBreakdowns.some(model => !getPricing(model.modelName))) && <p role="status" className="mb-4 text-xs text-amber-700">部分模型价格未配置：有会话费用时保留原值，否则未计价；合计可能不完整。</p>}
       {metric === 'sessions' ? (
-        <SessionAnalyticsSection key={`${agent}:${project}:${timeRange}:${customRange.startDate}:${customRange.endDate}`} agent={agent} project={project} range={timeRange} startDate={timeRange === 'custom' ? customRange.startDate : undefined} endDate={timeRange === 'custom' ? customRange.endDate : undefined} refreshVersion={sessionRefreshVersion} />
+        <SessionAnalyticsSection key={`${agent}:${project}:${timeRange}:${customRange.startDate}:${customRange.endDate}:${customRange.days}`} agent={agent} project={project} range={timeRange} startDate={timeRange === 'custom' ? customRange.startDate : undefined} endDate={timeRange === 'custom' ? customRange.endDate : undefined} days={timeRange === 'recent' ? customRange.days : undefined} refreshVersion={sessionRefreshVersion} />
       ) : <>
       {agent === 'all' && <p className="mb-4 text-xs text-stone-500">汇总来源：{(agentsInfo?.available ?? []).map(source => AGENT_LABELS[source] || source).join('、')}。代码变更与工具分析仅统计支持该能力的来源。</p>}
       {/* KPI Row */}

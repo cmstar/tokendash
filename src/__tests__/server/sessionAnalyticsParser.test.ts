@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildSessionAnalyticsResponse, buildSessionDetail, parseCodexTranscriptMetadata, type SessionAnalyticsIndexedSession } from '../../server/sessionAnalyticsParser.js';
 
 const capabilities = {
@@ -35,6 +35,23 @@ const sessions: SessionAnalyticsIndexedSession[] = [
 ];
 
 describe('buildSessionAnalyticsResponse', () => {
+  it('counts recent events in ongoing sessions and matches the 2D/3D shortcuts', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 27, 12));
+    try {
+      const events = [24, 25, 26, 27, 28].map(day => ({
+        id: `call-${day}`, type: 'llm_call' as const, timestamp: new Date(2026, 9, day, 0).toISOString(), contentAvailable: false,
+        usage: { inputTokens: 80, outputTokens: 20, cacheReadTokens: 0, totalTokens: 100, cost: 1 },
+      }));
+      const indexed = [{ ...sessions[0], summary: { ...sessions[0].summary, startedAt: new Date(2026, 9, 20).toISOString(), endedAt: new Date(2026, 9, 27, 1).toISOString() }, events }];
+      for (const days of [2, 3] as const) {
+        const result = buildSessionAnalyticsResponse(indexed, capabilities, { range: 'recent', days });
+        expect(result.sessions[0]).toMatchObject({ totalTokens: days * 100, llmCallCount: days });
+        expect(result.sessions).toEqual(buildSessionAnalyticsResponse(indexed, capabilities, { range: days === 2 ? '2d' : '3d' }).sessions);
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
   it('applies inclusive custom dates before aggregation and pagination', () => {
     const indexed = [27, 28, 29, 30].map((day, index) => ({
       ...sessions[0],

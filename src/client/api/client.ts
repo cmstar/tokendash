@@ -130,6 +130,7 @@ export interface SessionAnalyticsRequest {
   range: string;
   startDate?: string;
   endDate?: string;
+  days?: number;
   model?: string;
   status?: string;
   query?: string;
@@ -144,6 +145,7 @@ export async function fetchSessionAnalytics(request: SessionAnalyticsRequest): P
     agent: request.agent,
     range: request.range,
     ...(request.range === 'custom' ? { startDate: request.startDate || '', endDate: request.endDate || '' } : {}),
+    ...(request.range === 'recent' ? { days: String(request.days ?? '') } : {}),
     ...(request.project ? { project: request.project } : {}),
     ...(request.model ? { model: request.model } : {}),
     ...(request.status ? { status: request.status } : {}),

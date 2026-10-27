@@ -8,13 +8,14 @@ export interface SessionAnalyticsFilters {
   range: string;
   startDate?: string;
   endDate?: string;
+  days?: number;
   model?: string;
   status?: string;
 }
 
 /** Owns request identity, pagination and stale-data retention for the Sessions tab. */
 export function useSessionAnalytics(filters: SessionAnalyticsFilters, refreshVersion: number) {
-  const { agent, project, range, startDate, endDate, model, status } = filters;
+  const { agent, project, range, startDate, endDate, days, model, status } = filters;
   const [data, setData] = useState<SessionAnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +34,7 @@ export function useSessionAnalytics(filters: SessionAnalyticsFilters, refreshVer
   useEffect(() => {
     setCursor(undefined);
     setHistory([]);
-  }, [agent, project, range, startDate, endDate, model, status, debouncedQuery]);
+  }, [agent, project, range, startDate, endDate, days, model, status, debouncedQuery]);
 
   const load = useCallback(async (refresh = false) => {
     controllerRef.current?.abort();
@@ -43,14 +44,14 @@ export function useSessionAnalytics(filters: SessionAnalyticsFilters, refreshVer
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchSessionAnalytics({ agent, project, range, startDate, endDate, model, status, query: debouncedQuery, cursor, limit: 20, refresh, signal: controller.signal });
+      const result = await fetchSessionAnalytics({ agent, project, range, startDate, endDate, days, model, status, query: debouncedQuery, cursor, limit: 20, refresh, signal: controller.signal });
       if (id === requestId.current) setData(result);
     } catch (err) {
       if (id === requestId.current && !controller.signal.aborted) setError(err instanceof Error ? err.message : 'Unable to load session analytics');
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [agent, project, range, startDate, endDate, model, status, debouncedQuery, cursor]);
+  }, [agent, project, range, startDate, endDate, days, model, status, debouncedQuery, cursor]);
 
   useEffect(() => { void load(refreshVersion > 0); }, [load, refreshVersion]);
   useEffect(() => {
