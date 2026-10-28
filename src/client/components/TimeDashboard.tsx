@@ -132,38 +132,49 @@ interface TimeDashboardProps {
   error: string | null;
   includeSystem: boolean;
   onIncludeSystemChange: (value: boolean) => void;
+  excludeZeroUsageDays: boolean;
+  onExcludeZeroUsageDaysChange: (value: boolean) => void;
   onRetry: () => void;
   startDate?: string;
   endDate: string;
   isToday: boolean;
 }
 
-export function TimeDashboard({ data, loading, error, includeSystem, onIncludeSystemChange, onRetry, startDate, endDate, isToday }: TimeDashboardProps) {
+export function TimeDashboard({ data, loading, error, includeSystem, onIncludeSystemChange, excludeZeroUsageDays, onExcludeZeroUsageDaysChange, onRetry, startDate, endDate, isToday }: TimeDashboardProps) {
   const displayDays = useMemo(() => timingDisplayDays(data?.daily ?? [], startDate, endDate), [data?.daily, startDate, endDate]);
-  const averages = data ? timingAverages(data.totals) : null;
-  const days = data?.totals.calendarDays ?? 0;
+  const averages = data ? timingAverages(data.totals, data.daily, excludeZeroUsageDays) : null;
+  const dailyAverageDetail = averages ? `${averages.averageDays} ${excludeZeroUsageDays ? 'active' : 'calendar'} ${averages.averageDays === 1 ? 'day' : 'days'}; ${averages.excludedDays} ${excludeZeroUsageDays ? 'zero-usage ' : ''}${averages.excludedDays === 1 ? 'day' : 'days'} excluded.` : '';
   const period = `${startDate ?? data?.daily[0]?.date ?? 'First recorded day'} – ${endDate}`;
   const cards = data && averages ? [
     { label: 'Total agent work time', value: formatDuration(data.totals.workMs), detail: `Main + delegated${includeSystem ? ' + system' : ''} agents. Parallel turns add up.` },
-    { label: 'Daily avg work time', value: formatDuration(averages.dailyWorkMs), detail: `${days} calendar ${days === 1 ? 'day' : 'days'}, including days with no activity.` },
+    { label: 'Daily avg work time', value: formatDuration(averages.dailyWorkMs), detail: dailyAverageDetail },
     { label: 'Total elapsed time', value: formatDuration(data.totals.elapsedMs), detail: 'Overlapping intervals count once across all selected agents.' },
-    { label: 'Daily avg elapsed time', value: formatDuration(averages.dailyElapsedMs), detail: `Elapsed time averaged over ${days} calendar ${days === 1 ? 'day' : 'days'}.` },
+    { label: 'Daily avg elapsed time', value: formatDuration(averages.dailyElapsedMs), detail: dailyAverageDetail },
     { label: 'Avg conversation time', value: averages.conversationMs === null ? '—' : formatDuration(averages.conversationMs), detail: `${data.totals.conversationCount} active ${data.totals.conversationCount === 1 ? 'conversation' : 'conversations'} (sessions). Main + child intervals merged per session.` },
     { label: 'Avg turn time', value: averages.turnMs === null ? '—' : formatDuration(averages.turnMs), detail: `${data.totals.completedTurnCount} completed Q&A ${data.totals.completedTurnCount === 1 ? 'turn' : 'turns'}. Full main-turn elapsed time, selected by answer date; includes child waiting once.` },
   ] : [];
 
   return <div data-testid="timing-dashboard" className="space-y-5" aria-busy={loading}>
     <div className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200/60 bg-white/60 p-4 md:flex-row md:items-center">
-      <div className="max-w-3xl text-xs leading-relaxed text-stone-500">
+      <div className="min-w-0 max-w-3xl text-xs leading-relaxed text-stone-500">
         <p>Agent work time includes tools and waiting within recorded turns. Elapsed time removes overlaps; time between turns is excluded.</p>
         {data && <p className="mt-1">Reporting timezone: {data.timezone}.</p>}
       </div>
-      <div className="shrink-0">
-        <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-stone-700">
-          <input type="checkbox" checked={includeSystem} onChange={event => onIncludeSystemChange(event.target.checked)} className="h-4 w-4 accent-indigo-600" />
-          Include system agents
-        </label>
-        <p className="mt-1 pl-6 text-[11px] text-stone-400">Guardian, auto-review and similar agents.</p>
+      <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:gap-5 md:flex-col md:gap-3 xl:flex-row xl:gap-5">
+        <div>
+          <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-stone-700">
+            <input type="checkbox" checked={includeSystem} onChange={event => onIncludeSystemChange(event.target.checked)} className="h-4 w-4 accent-indigo-600" />
+            Include system agents
+          </label>
+          <p className="mt-1 pl-6 text-[11px] text-stone-400">Guardian, auto-review and similar agents.</p>
+        </div>
+        <div>
+          <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-stone-700">
+            <input type="checkbox" checked={excludeZeroUsageDays} onChange={event => onExcludeZeroUsageDaysChange(event.target.checked)} className="h-4 w-4 accent-indigo-600" />
+            Exclude zero-usage days
+          </label>
+          <p className="mt-1 pl-6 text-[11px] text-stone-400">Only affects daily averages.</p>
+        </div>
       </div>
     </div>
     {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -188,7 +199,7 @@ export function TimeDashboard({ data, loading, error, includeSystem, onIncludeSy
         {data.quality.unattributedTurns > 0 && <p>{data.quality.unattributedTurns} {data.quality.unattributedTurns === 1 ? 'turn' : 'turns'} could not be linked to a parent conversation; conversation averages may be incomplete.</p>}
       </div>}
       {data.totals.workMs === 0 && <p role="status" className="text-sm text-stone-500">No agent work intervals overlap the selected period and project.</p>}
-      {displayDays.sparse && <p className="text-xs text-stone-500">This extended range shows recorded days only in charts and details. Daily averages still include every calendar day.</p>}
+      {displayDays.sparse && <p className="text-xs text-stone-500">This extended range shows recorded days only in charts and details. {excludeZeroUsageDays ? 'Daily averages include only dates with recorded work or elapsed time.' : 'Daily averages still include every calendar day.'}</p>}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2"><DailyCharts data={{ ...data, daily: displayDays.days }} /><ProjectChart data={data} /><ProjectChart data={data} elapsed /></div>
       <ActivityHeatmap data={data} today={isToday ? endDate : undefined} />
       <Panel title="Daily detail" subtitle={`${period} · ${data.timezone} · Most recent first`} testId="timing-detail">

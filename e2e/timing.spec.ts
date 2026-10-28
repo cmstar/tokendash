@@ -193,11 +193,75 @@ test.describe('Codex Time metric', () => {
     await expect(page.getByTestId('timing-detail').locator('tfoot').getByRole('cell')).toHaveText(['6h', '4h', '1h', '45m']);
     await page.getByRole('button', { name: '7D', exact: true }).click();
     // The four empty days still contribute to the calendar-day denominator.
+    await expect(page.getByRole('checkbox', { name: 'Exclude zero-usage days', exact: true })).not.toBeChecked();
     await expectKpi(page, 'Daily avg work time', '51m 25s');
     await expectKpi(page, 'Daily avg elapsed time', '34m 17s');
     await expectKpi(page, 'Avg turn time', '45m');
     await expect(page.getByTestId('timing-detail').locator('tbody tr')).toHaveCount(7);
     await expect(page.getByTestId('timing-detail').getByRole('row').filter({ hasText: timingDate(6) }).getByRole('cell')).toHaveText(['0s', '0s', '—', '—']);
+  });
+
+  test('excluding zero-usage days changes only daily averages and persists across reloads, metrics, and project filters', async ({ page }) => {
+    await setup(page);
+    await openTime(page);
+    await page.getByRole('button', { name: '7D', exact: true }).click();
+    await expectKpi(page, 'Daily avg work time', '51m 25s');
+    await expectKpi(page, 'Daily avg elapsed time', '34m 17s');
+    const excludeZeroDays = page.getByRole('checkbox', { name: 'Exclude zero-usage days', exact: true });
+    await expect(excludeZeroDays).not.toBeChecked();
+    const detail = page.getByTestId('timing-detail');
+    const previousRows = await detail.getByRole('row').allTextContents();
+    await expectChartBars(page);
+    const chartBars = page.getByTestId('timing-dashboard').locator('.recharts-bar-rectangle path');
+    const previousShapes = await chartBars.evaluateAll(bars => bars.map(bar => bar.getAttribute('d')));
+    const timingRequests: string[] = [];
+    const recordTimingRequest = (request: import('@playwright/test').Request) => {
+      if (new URL(request.url()).pathname === '/api/timing') timingRequests.push(request.url());
+    };
+    page.on('request', recordTimingRequest);
+
+    await excludeZeroDays.check();
+    await expectKpi(page, 'Daily avg work time', '2h');
+    await expectKpi(page, 'Daily avg elapsed time', '1h 20m');
+    await expectKpi(page, 'Total agent work time', '6h');
+    await expectKpi(page, 'Total elapsed time', '4h');
+    await expectKpi(page, 'Avg conversation time', '1h');
+    await expectKpi(page, 'Avg turn time', '45m');
+    expect(await detail.getByRole('row').allTextContents()).toEqual(previousRows);
+    await expectChartBars(page);
+    expect(await chartBars.evaluateAll(bars => bars.map(bar => bar.getAttribute('d')))).toEqual(previousShapes);
+    expect(timingRequests).toEqual([]);
+    page.off('request', recordTimingRequest);
+    await page.screenshot({ path: 'tmp/time-redesign-validation/exclude-zero-days.png', fullPage: true });
+
+    await page.reload();
+    await expect(excludeZeroDays).toBeChecked();
+    await expectKpi(page, 'Daily avg work time', '2h');
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('dashboard_timing_exclude_zero_days') || 'null'))).toBe(true);
+    const refreshRequest = timingRequest(page, url => url.searchParams.get('refresh') === '1');
+    await page.getByRole('button', { name: '刷新数据（每 60 秒自动刷新）' }).click();
+    await refreshRequest;
+    await expect(excludeZeroDays).toBeChecked();
+    await expectKpi(page, 'Daily avg elapsed time', '1h 20m');
+    await page.getByRole('button', { name: 'Tokens', exact: true }).click();
+    await expect(excludeZeroDays).toHaveCount(0);
+    await openTime(page);
+    await expect(excludeZeroDays).toBeChecked();
+    await expectKpi(page, 'Daily avg elapsed time', '1h 20m');
+
+    // This project has activity on two dates, instead of the overall three.
+    const project = page.getByRole('combobox', { name: 'Project', exact: true });
+    await project.selectOption(TIMING_ONLY_PROJECT);
+    await expectKpi(page, 'Total agent work time', '2h 30m');
+    await expectKpi(page, 'Daily avg work time', '1h 15m');
+    await expectKpi(page, 'Daily avg elapsed time', '1h 15m');
+    await expect(detail.locator('tbody tr')).toHaveCount(7);
+    await project.selectOption('');
+    await expectKpi(page, 'Daily avg work time', '2h');
+    await excludeZeroDays.uncheck();
+    await expectKpi(page, 'Daily avg work time', '51m 25s');
+    await expectKpi(page, 'Daily avg elapsed time', '34m 17s');
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('dashboard_timing_exclude_zero_days') || 'null'))).toBe(false);
   });
 
   test('time-only projects are selectable and system-agent filtering reaches the API', async ({ page }) => {
@@ -231,6 +295,7 @@ test.describe('Codex Time metric', () => {
   test('empty timing history keeps zero totals finite', async ({ page }) => {
     await setup(page, { empty: true });
     await openTime(page);
+    await page.getByRole('checkbox', { name: 'Exclude zero-usage days', exact: true }).check();
     for (const label of ['Total agent work time', 'Daily avg work time', 'Total elapsed time', 'Daily avg elapsed time']) {
       await expectKpi(page, label, '0s');
     }
@@ -260,9 +325,13 @@ test.describe('Codex Time metric', () => {
     });
     await page.getByRole('button', { name: 'Today', exact: true }).click();
     await openTime(page);
+    await page.getByRole('checkbox', { name: 'Exclude zero-usage days', exact: true }).check();
     await expectKpi(page, 'Total agent work time', '0s');
+    await expectKpi(page, 'Daily avg work time', '0s');
+    await expectKpi(page, 'Daily avg elapsed time', '0s');
     await expectKpi(page, 'Avg conversation time', '—');
     await expectKpi(page, 'Avg turn time', '1h');
+    await expect(page.getByTestId('timing-dashboard')).not.toContainText(/NaN|Infinity/);
     await expect(page.getByText('No agent work intervals overlap the selected period and project.', { exact: true })).toBeVisible();
     await expect(page.getByTestId('timing-detail').locator('tbody tr').getByRole('cell')).toHaveText(['0s', '0s', '—', '1h']);
     await expect(page.getByTestId('timing-detail').locator('tfoot').getByRole('cell')).toHaveText(['0s', '0s', '—', '1h']);
@@ -294,6 +363,12 @@ test.describe('Codex Time metric', () => {
     await setup(page);
     await openTime(page);
     await expectKpi(page, 'Total agent work time', '5h 30m');
+    const excludeZeroDays = page.getByRole('checkbox', { name: 'Exclude zero-usage days', exact: true });
+    await expect(excludeZeroDays).toBeVisible();
+    const toggleBounds = await excludeZeroDays.locator('..').boundingBox();
+    expect(toggleBounds).not.toBeNull();
+    expect(toggleBounds!.x).toBeGreaterThanOrEqual(0);
+    expect(toggleBounds!.x + toggleBounds!.width).toBeLessThanOrEqual(390);
     for (const id of ['timing-summary', 'timing-heatmap', 'timing-detail']) {
       const panel = page.getByTestId(id);
       const bounds = await panel.boundingBox();

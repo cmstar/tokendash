@@ -302,9 +302,15 @@ project filters as the usage dashboard. Time is available only for Codex.
   conversations count only once. Tool execution and waiting within a turn
   are included; gaps between turns are excluded. This measures recorded
   turn lifetimes, not CPU time or time spent generating tokens.
-- **Daily averages** divide by all calendar days in the selected range,
-  including days without activity. ALL starts on the first recorded day
-  matching the filters and ends today.
+- **Daily averages** divide by all calendar days in the selected range by
+  default, including days without activity. Enable **Exclude zero-usage days**
+  to average over dates with recorded agent work or elapsed time under the
+  current date, project, and system-agent filters. Weekends with activity
+  still count; idle weekdays do not. The cards show the number of included
+  and excluded days, and the preference is remembered. With no active days,
+  both daily averages show `0s`. Totals, charts, daily detail, and conversation
+  and turn averages keep their existing calculations. ALL starts on the
+  first recorded day matching the filters and ends today.
 - **Avg conversation time** averages elapsed time within each main
   conversation and its delegated subagents. Only conversations with valid
   timing in the selected range contribute; overlapping conversations remain

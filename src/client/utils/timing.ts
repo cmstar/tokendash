@@ -19,10 +19,14 @@ export function timingMeanDurations(totals: Pick<TimingResponse['totals'], 'conv
   };
 }
 
-export function timingAverages(totals: TimingResponse['totals']) {
+export function timingAverages(totals: TimingResponse['totals'], daily: TimingResponse['daily'] = [], excludeZeroUsageDays = false) {
+  const activeDays = new Set(daily.filter(day => day.workMs > 0 || day.elapsedMs > 0).map(day => day.date)).size;
+  const averageDays = excludeZeroUsageDays ? activeDays : totals.calendarDays;
   return {
-    dailyWorkMs: totals.calendarDays > 0 ? totals.workMs / totals.calendarDays : 0,
-    dailyElapsedMs: totals.calendarDays > 0 ? totals.elapsedMs / totals.calendarDays : 0,
+    averageDays,
+    excludedDays: Math.max(0, totals.calendarDays - averageDays),
+    dailyWorkMs: averageDays > 0 ? totals.workMs / averageDays : 0,
+    dailyElapsedMs: averageDays > 0 ? totals.elapsedMs / averageDays : 0,
     ...timingMeanDurations(totals),
   };
 }

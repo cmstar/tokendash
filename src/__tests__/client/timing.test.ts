@@ -14,9 +14,40 @@ describe('timing display', () => {
 
   it('uses calendar days and per-conversation elapsed totals as distinct denominators', () => {
     expect(timingAverages({ workMs: 12 * hour, elapsedMs: 4 * hour, calendarDays: 3, conversationCount: 2, conversationElapsedMs: 6 * hour, completedTurnCount: 4, completedTurnElapsedMs: 7 * hour })).toEqual({
-      dailyWorkMs: 4 * hour, dailyElapsedMs: 4 * hour / 3, conversationMs: 3 * hour, turnMs: 7 * hour / 4,
+      averageDays: 3, excludedDays: 0, dailyWorkMs: 4 * hour, dailyElapsedMs: 4 * hour / 3, conversationMs: 3 * hour, turnMs: 7 * hour / 4,
     });
-    expect(timingAverages({ workMs: 0, elapsedMs: 0, calendarDays: 0, conversationCount: 0, conversationElapsedMs: 0, completedTurnCount: 0, completedTurnElapsedMs: 0 })).toEqual({ dailyWorkMs: 0, dailyElapsedMs: 0, conversationMs: null, turnMs: null });
+    expect(timingAverages({ workMs: 0, elapsedMs: 0, calendarDays: 0, conversationCount: 0, conversationElapsedMs: 0, completedTurnCount: 0, completedTurnElapsedMs: 0 })).toEqual({ averageDays: 0, excludedDays: 0, dailyWorkMs: 0, dailyElapsedMs: 0, conversationMs: null, turnMs: null });
+  });
+
+  it('optionally excludes zero-usage dates while counting weekend work and preserving conversation and turn means', () => {
+    const totals = { workMs: 6 * hour, elapsedMs: 4 * hour, calendarDays: 5, conversationCount: 3, conversationElapsedMs: 6 * hour, completedTurnCount: 2, completedTurnElapsedMs: 6 * hour };
+    const daily = [
+      { date: '2026-10-24', workMs: 6 * hour, elapsedMs: 3 * hour, models: {}, conversationCount: 2, conversationElapsedMs: 5 * hour, completedTurnCount: 1, completedTurnElapsedMs: 2 * hour },
+      { date: '2026-10-25', workMs: 0, elapsedMs: hour, models: {}, conversationCount: 1, conversationElapsedMs: hour, completedTurnCount: 0, completedTurnElapsedMs: 0 },
+      { date: '2026-10-26', workMs: 0, elapsedMs: 0, models: {}, conversationCount: 0, conversationElapsedMs: 0, completedTurnCount: 1, completedTurnElapsedMs: 4 * hour },
+      { date: '2026-10-27', workMs: 0, elapsedMs: 0, models: {}, conversationCount: 0, conversationElapsedMs: 0, completedTurnCount: 0, completedTurnElapsedMs: 0 },
+    ];
+    const before = structuredClone({ totals, daily });
+    // Oct 23 is absent; Oct 26 has only a midnight answer; Oct 27 is explicit zero.
+    // Both positive dates are a weekend and must count, regardless of weekday.
+    expect(timingAverages(totals, daily, true)).toEqual({ averageDays: 2, excludedDays: 3, dailyWorkMs: 3 * hour, dailyElapsedMs: 2 * hour, conversationMs: 2 * hour, turnMs: 3 * hour });
+    expect(timingAverages(totals, daily)).toEqual({ averageDays: 5, excludedDays: 0, dailyWorkMs: 6 * hour / 5, dailyElapsedMs: 4 * hour / 5, conversationMs: 2 * hour, turnMs: 3 * hour });
+    expect({ totals, daily }).toEqual(before);
+  });
+
+  it('uses zero for daily means when no dates have usage, even with completed-turn duration', () => {
+    const daily = [{ date: '2026-10-28', workMs: 0, elapsedMs: 0, models: {}, conversationCount: 0, conversationElapsedMs: 0, completedTurnCount: 1, completedTurnElapsedMs: 3 * hour }];
+    const totals = { ...daily[0], calendarDays: 7 };
+    const averages = timingAverages(totals, daily, true);
+    expect(averages).toEqual({ averageDays: 0, excludedDays: 7, dailyWorkMs: 0, dailyElapsedMs: 0, conversationMs: null, turnMs: 3 * hour });
+    expect(formatDuration(averages.dailyWorkMs)).toBe('0s');
+    expect(formatDuration(averages.dailyElapsedMs)).toBe('0s');
+    expect(timingAverages({ ...totals, completedTurnCount: 0, completedTurnElapsedMs: 0 }, [], true).averageDays).toBe(0);
+  });
+
+  it('counts only dates present in the filtered response, even for ranges beyond the zero-fill limit', () => {
+    const day = { date: '2026-10-28', workMs: hour, elapsedMs: hour, models: {}, conversationCount: 1, conversationElapsedMs: hour, completedTurnCount: 1, completedTurnElapsedMs: hour };
+    expect(timingAverages({ ...day, calendarDays: 20_000 }, [day], true)).toMatchObject({ averageDays: 1, excludedDays: 19_999, dailyWorkMs: hour, dailyElapsedMs: hour });
   });
 
   it('keeps full completed-turn duration separate from clipped period work and partial conversations', () => {

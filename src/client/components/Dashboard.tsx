@@ -254,6 +254,7 @@ export function Dashboard() {
   const metric = storedMetric === 'time' && agent !== 'codex' ? 'tokens' : storedMetric;
   const isTime = metric === 'time';
   const [includeSystem, setIncludeSystem] = useLocalStorageState('dashboard_timing_includeSystem', false);
+  const [excludeZeroUsageDays, setExcludeZeroUsageDays] = useLocalStorageState('dashboard_timing_exclude_zero_days', false);
   const timingDates = timeRangeDates(timeRange, customRange, today);
   const timingData = useTimingData(isTime && agent === 'codex', {
     startDate: timingDates?.startDate,
@@ -795,6 +796,7 @@ export function Dashboard() {
       {!isTime && filteredDaily.some(day => day.modelBreakdowns.some(model => !getPricing(model.modelName))) && <p role="status" className="mb-4 text-xs text-amber-700">部分模型价格未配置：有会话费用时保留原值，否则未计价；合计可能不完整。</p>}
       {isTime ? <TimeDashboard data={timingData.data} loading={timingData.loading} error={timingData.error}
         includeSystem={includeSystem} onIncludeSystemChange={setIncludeSystem}
+        excludeZeroUsageDays={excludeZeroUsageDays} onExcludeZeroUsageDaysChange={setExcludeZeroUsageDays}
         onRetry={() => setSessionRefreshVersion(version => version + 1)}
         startDate={timingDates?.startDate} endDate={timingDates?.endDate ?? today} isToday={timeRange === 'today'} /> : metric === 'sessions' ? (
         <SessionAnalyticsSection key={`${agent}:${project}:${timeRange}:${customRange.startDate}:${customRange.endDate}:${customRange.days}`} agent={agent} project={project} range={timeRange} startDate={timeRange === 'custom' ? customRange.startDate : undefined} endDate={timeRange === 'custom' ? customRange.endDate : undefined} days={timeRange === 'recent' ? customRange.days : undefined} refreshVersion={sessionRefreshVersion} />
