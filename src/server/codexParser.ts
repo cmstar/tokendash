@@ -6,6 +6,7 @@ import type { DailyEntry, DailyResponse, ProjectsResponse, BlockEntry, BlocksRes
 import { calculateCost, isLongContextCodexRequest, normalizeCodexModelName } from './codexPricing.js';
 import { type BlockGranularity } from './claudeJsonlParser.js';
 import { buildUsageFileIndex } from './usageFileIndex.js';
+import { buildCodexTiming, parseCodexTiming, type ParsedTiming, type TimingOptions } from './codexTiming.js';
 import { getCodexSessionDirs, isCodexSessionDirAccessible } from './codexDataSources.js';
 import { readCodexRollout, parseCodexRollout, isInheritedCodexRecord, type CodexRecord } from './codexRollout.js';
 
@@ -66,6 +67,7 @@ export interface ParsedSession {
   model: string;
   createdAt: string;
   tokenEvents: ParsedTokenEvent[];
+  timing?: ParsedTiming;
 }
 
 export interface AggregateOptions {
@@ -93,7 +95,7 @@ interface AggregateBucket {
   models: Map<string, TokenAccumulator>;
 }
 
-const CODEX_INDEX_VERSION = 'codex-session-v8-zstd-responses';
+const CODEX_INDEX_VERSION = 'codex-session-v12-timing';
 const DEFAULT_TZ = 'Asia/Shanghai';
 
 interface SerializedAggregateBucket {
@@ -412,12 +414,16 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
 
   if (!sessionId) return null;
 
-  return { id: sessionId, cwd, model, createdAt, tokenEvents };
+  return { id: sessionId, cwd, model, createdAt, tokenEvents, timing: parseCodexTiming(records, meta) };
 }
 
 /** Parse all Codex sessions. */
 export function parseAllSessions(): ParsedSession[] {
   return loadIndexedSessions().sessions;
+}
+
+export function getTimingResponse(options?: TimingOptions) {
+  return buildCodexTiming(parseAllSessions(), options);
 }
 
 function fallbackEventKey(ev: ParsedTokenEvent): string {
@@ -439,10 +445,14 @@ export function deduplicateParsedSessions(sessions: ParsedSession[]): ParsedSess
   for (const session of sessions) {
     let target = merged.get(session.id);
     if (!target) {
-      target = { ...session, tokenEvents: [] };
+      target = { ...session, tokenEvents: [], timing: session.timing ? { ...session.timing, turns: [] } : undefined };
       merged.set(session.id, target);
     }
     target.tokenEvents.push(...session.tokenEvents);
+    if (session.timing) {
+      target.timing ??= { ...session.timing, turns: [] };
+      target.timing.turns.push(...session.timing.turns);
+    }
   }
 
   return [...merged.values()].map(session => {

@@ -30,6 +30,14 @@ function install() {
     throw new Error('Usage: npm run install:global [-- git+https://github.com/cmstar/tokendash.git#main]');
   }
   const source = args[0];
+  const npmMajor = Number(runNode(npmCli, ['--version'], { capture: true }).split('.')[0]);
+  // npm 12's pack command does not classify its argument as a root dependency,
+  // so packing needs allow-git=all. Older commits may have a mirror URL in their
+  // lockfile; normalize that host without rewriting GitHub URLs.
+  const gitOptions = source && npmMajor >= 12 ? [
+    '--allow-git=all', '--registry=https://registry.npmjs.org',
+    '--replace-registry-host=registry.npmmirror.com',
+  ] : [];
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   // Lifecycle scripts also invoke `npm` and `node` by name. Keep those on the
   // same toolchain, even when WSL's PATH includes a Windows npm installation.
@@ -50,10 +58,13 @@ function install() {
       runNode(npmCli, ['ci', '--global=false', '--include=dev'], { env: localEnv });
     }
     console.log(`Packing ${source ?? 'the current checkout'}...`);
-    const packed = JSON.parse(runNode(npmCli, [
+    const packResult = JSON.parse(runNode(npmCli, [
       'pack', '--global=false', '--foreground-scripts=false', '--json',
-      '--pack-destination', staging, source ?? '.',
+      ...gitOptions, '--pack-destination', staging, source ?? '.',
     ], { capture: true, env: localEnv }));
+    // npm <= 11 returns an array; npm 12 keys the result by package name.
+    const packed = Array.isArray(packResult) ? packResult
+      : packResult && typeof packResult === 'object' ? Object.values(packResult) : [];
     const item = packed[0];
     if (packed.length !== 1 || item?.name !== pkg.name
       || typeof item.filename !== 'string' || basename(item.filename) !== item.filename) {

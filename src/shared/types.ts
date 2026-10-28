@@ -77,7 +77,34 @@ export interface BlocksResponse {
   blocks: BlockEntry[];
 }
 
-export type MetricMode = 'tokens' | 'usd' | 'sessions';
+export interface TimingResponse {
+  timezone: string;
+  totals: {
+    workMs: number;
+    elapsedMs: number;
+    calendarDays: number;
+    conversationCount: number;
+    conversationElapsedMs: number;
+    completedTurnCount: number;
+    completedTurnElapsedMs: number;
+  };
+  daily: Array<{
+    date: string;
+    workMs: number;
+    elapsedMs: number;
+    models: Record<string, number>;
+    conversationCount: number;
+    conversationElapsedMs: number;
+    completedTurnCount: number;
+    completedTurnElapsedMs: number;
+  }>;
+  projects: Array<{ project: string; workMs: number; elapsedMs: number }>;
+  hourly: Array<{ date: string; hour: number; workMs: number }>;
+  quality: { incompleteTurns: number; estimatedTurns: number; unattributedTurns: number };
+  availableProjects: string[];
+}
+
+export type MetricMode = 'tokens' | 'usd' | 'sessions' | 'time';
 export type GranularityMode = 'day' | 'hour';
 
 // --- Analytics types (Claude Code & OpenClaw only) ---

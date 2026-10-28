@@ -63,6 +63,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      - name: Use npm 12 for the modern source-install matrix
+        if: matrix.node == '24'
+        run: npm install --global npm@12.2.1
+
       # Start from a clean checkout; the installer must provision its own build
       # dependencies and verify the installed CLI without relying on a shell shim.
       - name: Install the checkout into an isolated global prefix
@@ -70,8 +74,8 @@ jobs:
         env:
           npm_config_prefix: ${{ runner.temp }}/tokendash global
 
-      - name: Verify compressed history and persistent caches
-        run: npx vitest run src/__tests__/server/codexCompressedHistory.test.ts src/__tests__/server/codexParser.test.ts src/__tests__/server/codexArchiveSettings.test.ts src/__tests__/server/usageFileIndex.test.ts
+      - name: Verify Codex timing, compressed history, and persistent caches
+        run: npx vitest run src/__tests__/server/codexTiming.test.ts src/__tests__/server/timingRoute.test.ts src/__tests__/server/codexCompressedHistory.test.ts src/__tests__/server/codexParser.test.ts src/__tests__/server/codexArchiveSettings.test.ts src/__tests__/server/usageFileIndex.test.ts
 
   macos:
     name: macOS (Swift)

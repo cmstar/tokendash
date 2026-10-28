@@ -1,5 +1,31 @@
 import { z } from 'zod';
 
+const durationMs = z.number().finite().nonnegative();
+export const TimingResponseSchema = z.object({
+  timezone: z.string(),
+  totals: z.object({
+    workMs: durationMs, elapsedMs: durationMs,
+    calendarDays: z.number().int().nonnegative(),
+    conversationCount: z.number().int().nonnegative(),
+    conversationElapsedMs: durationMs,
+    completedTurnCount: z.number().int().nonnegative(),
+    completedTurnElapsedMs: durationMs,
+  }),
+  daily: z.array(z.object({
+    date: z.string(), workMs: durationMs, elapsedMs: durationMs, models: z.record(durationMs),
+    conversationCount: z.number().int().nonnegative(), conversationElapsedMs: durationMs,
+    completedTurnCount: z.number().int().nonnegative(), completedTurnElapsedMs: durationMs,
+  })),
+  projects: z.array(z.object({ project: z.string(), workMs: durationMs, elapsedMs: durationMs })),
+  hourly: z.array(z.object({ date: z.string(), hour: z.number().int().min(0).max(23), workMs: durationMs })),
+  quality: z.object({ incompleteTurns: z.number().int().nonnegative(), estimatedTurns: z.number().int().nonnegative(), unattributedTurns: z.number().int().nonnegative() }),
+  availableProjects: z.array(z.string()),
+});
+
+export function validateTiming(data: unknown) {
+  return TimingResponseSchema.parse(data);
+}
+
 export const ModelBreakdownSchema = z.object({
   totalTokens: z.number().optional(),
   modelName: z.string(),

@@ -1,8 +1,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getCodexBlocksResponse, getCodexDailyResponse, resolveCodexWorkerPath } from '../../server/codexResponseService.js';
+import { getCodexBlocksResponse, getCodexDailyResponse, getCodexTimingResponse, resolveCodexWorkerPath } from '../../server/codexResponseService.js';
 import { cache } from '../../server/cache.js';
 import { clearUsageFileIndexMemory } from '../../server/usageFileIndex.js';
 
@@ -89,10 +90,26 @@ describe('codex response worker', () => {
   });
 
   it('resolves the sidecar worker next to the compiled bundled daemon', () => {
-    const worker = resolveCodexWorkerPath('file:///tmp/tokendash/dist/daemon.cjs');
+    const dist = join(tmpdir(), 'tokendash', 'dist');
+    const worker = resolveCodexWorkerPath(pathToFileURL(join(dist, 'daemon.cjs')).href);
 
-    expect(dirname(worker)).toBe('/tmp/tokendash/dist/server');
+    expect(dirname(worker)).toBe(join(dist, 'server'));
     expect(worker.endsWith('codexResponseWorker.js')).toBe(true);
+  });
+
+  it('keeps timing date/project/system options in dedicated service cache keys', async () => {
+    const sessionDir = join(process.env.CODEX_HOME!, 'sessions', '2026', '09', '02');
+    const timed = (id: string, source: unknown, day: string) => [
+      { type: 'session_meta', payload: { id, source, cwd: `/repo/${id}`, timestamp: `${day}T00:00:00Z` } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: id, completed_at: Date.parse(`${day}T00:01:00Z`) / 1000, duration_ms: 60_000 } },
+    ].map(row => JSON.stringify(row)).join('\n');
+    writeFileSync(join(sessionDir, 'main.jsonl'), timed('main', 'cli', '2026-09-02'));
+    writeFileSync(join(sessionDir, 'system.jsonl'), timed('system', { subagent: { other: 'guardian' } }, '2026-09-03'));
+    const opts = { startDate: '2026-09-02', endDate: '2026-09-03' };
+    expect((await getCodexTimingResponse(opts)).totals.workMs).toBe(60_000);
+    expect((await getCodexTimingResponse({ ...opts, includeSystem: true })).totals.workMs).toBe(120_000);
+    expect((await getCodexTimingResponse({ ...opts, includeSystem: true, project: 'system' })).totals.workMs).toBe(60_000);
+    expect((await getCodexTimingResponse({ ...opts, includeSystem: true, endDate: '2026-09-02', project: 'system' })).totals.workMs).toBe(0);
   });
 
   it('keeps fine-grained block requests off the hourly bundle cache', async () => {

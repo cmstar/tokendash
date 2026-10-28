@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as rollout from '../../server/codexRollout.js';
-import { buildCodexResponsesFromSessions, deduplicateParsedSessions, parseAllSessions, parseCodexSession, scanCodexSessions } from '../../server/codexParser.js';
+import { buildCodexResponsesFromSessions, deduplicateParsedSessions, getTimingResponse, parseAllSessions, parseCodexSession, scanCodexSessions } from '../../server/codexParser.js';
 import { getSessionAnalytics, getSessionDetail, invalidateSessionAnalyticsSource } from '../../server/sessionAnalyticsParser.js';
 import { clearUsageFileIndexMemory } from '../../server/usageFileIndex.js';
 
@@ -170,6 +170,25 @@ describe('Codex response usage and lineage', () => {
 });
 
 describe('persistent Codex metadata and usage caches', () => {
+  it('reuses parsed timing intervals from compressed usage cache after restart without rereading history', () => {
+    const started = Date.parse(stamp) / 1000;
+    const file = write('timed.jsonl.zst', [meta(), context('timed'), legacy(100),
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'timed', started_at: started } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'timed', completed_at: started + 120, duration_ms: 120_000 } },
+    ]);
+    const read = vi.spyOn(rollout, 'readCodexRollout');
+    const first = getTimingResponse({ startDate: '2026-10-01', endDate: '2026-10-01' });
+    expect(first.totals.workMs).toBe(120_000);
+    expect(first.totals).toMatchObject({ completedTurnCount: 1, completedTurnElapsedMs: 120_000 });
+    expect(first.daily[0]).toMatchObject({ conversationCount: 1, conversationElapsedMs: 120_000, completedTurnCount: 1, completedTurnElapsedMs: 120_000 });
+    expect(read).toHaveBeenCalledWith(file);
+    clearUsageFileIndexMemory();
+    read.mockClear();
+    expect(getTimingResponse({ startDate: '2026-10-01', endDate: '2026-10-01' })).toEqual(first);
+    expect(buildCodexResponsesFromSessions(parseAllSessions()).daily.totals.totalTokens).toBe(100);
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('reuses both indexes after restart, reparses only changes, and loads bodies on demand', () => {
     const compressed = write('history.jsonl.zst', [meta(), context('new-turn'), user('A historical request with details'), response('r1', 100)]);
     const active = write('active.jsonl', [meta('active'), context('active-turn'), legacy(200)]);

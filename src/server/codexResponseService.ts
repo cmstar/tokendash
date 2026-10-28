@@ -4,8 +4,9 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import type { DailyResponse, ProjectsResponse, BlocksResponse } from '../shared/types.js';
-import { getBlocksResponse, getCodexResponses, getDailyResponse, getProjectsResponse, type AggregateOptions } from './codexParser.js';
+import type { DailyResponse, ProjectsResponse, BlocksResponse, TimingResponse } from '../shared/types.js';
+import { getBlocksResponse, getCodexResponses, getDailyResponse, getProjectsResponse, getTimingResponse, type AggregateOptions } from './codexParser.js';
+import type { TimingOptions } from './codexTiming.js';
 import { type BlockGranularity } from './claudeJsonlParser.js';
 
 interface CodexResponseBundle {
@@ -14,15 +15,19 @@ interface CodexResponseBundle {
   blocks: BlocksResponse;
 }
 
-type CodexResponseKind = 'bundle' | 'daily' | 'projects' | 'blocks';
+type CodexResponseKind = 'bundle' | 'daily' | 'projects' | 'blocks' | 'timing';
 
 type CodexResponseByKind<K extends CodexResponseKind> =
   K extends 'bundle' ? CodexResponseBundle :
   K extends 'daily' ? DailyResponse :
   K extends 'projects' ? ProjectsResponse :
+  K extends 'timing' ? TimingResponse :
   BlocksResponse;
 
 interface SerializedAggregateOptions {
+  startDate?: string;
+  endDate?: string;
+  includeSystem?: boolean;
   groupBy?: AggregateOptions['groupBy'];
   project?: string | null;
   since?: string | null;
@@ -50,9 +55,12 @@ let nextRequestId = 1;
 const inFlight = new Map<string, Promise<unknown>>();
 const resultCache = new Map<string, { data: unknown; expiresAt: number }>();
 
-function serializeOptions(options?: Partial<AggregateOptions> & { granularity?: BlockGranularity }): SerializedAggregateOptions | undefined {
+function serializeOptions(options?: CodexServiceOptions): SerializedAggregateOptions | undefined {
   if (!options) return undefined;
   return {
+    startDate: options.startDate,
+    endDate: options.endDate,
+    includeSystem: options.includeSystem,
     groupBy: options.groupBy,
     project: options.project,
     since: options.since ? options.since.toISOString() : options.since,
@@ -62,7 +70,7 @@ function serializeOptions(options?: Partial<AggregateOptions> & { granularity?: 
   };
 }
 
-type CodexServiceOptions = Partial<AggregateOptions> & { granularity?: BlockGranularity };
+type CodexServiceOptions = Partial<AggregateOptions> & TimingOptions & { granularity?: BlockGranularity };
 
 function requestKey(kind: CodexResponseKind, options?: CodexServiceOptions): string {
   return `${getCodexUsageScopeKey()}:${getPricingExchangeRate()}:${kind}:${JSON.stringify(serializeOptions(options) ?? {})}`;
@@ -111,7 +119,14 @@ function runSync<K extends CodexResponseKind>(kind: K, options?: CodexServiceOpt
       return getProjectsResponse(options) as CodexResponseByKind<K>;
     case 'blocks':
       return getBlocksResponse(options) as CodexResponseByKind<K>;
+    case 'timing':
+      return getTimingResponse(options) as CodexResponseByKind<K>;
   }
+}
+
+export function getCodexTimingResponse(options?: TimingOptions, force = false): Promise<TimingResponse> {
+  if (force) resultCache.delete(requestKey('timing', options));
+  return getCodexResponse('timing', options);
 }
 
 function runInWorker<K extends CodexResponseKind>(kind: K, options?: CodexServiceOptions): Promise<CodexResponseByKind<K>> {

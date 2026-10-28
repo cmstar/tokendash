@@ -162,8 +162,36 @@ tokendash
 
 ### Install this fork or the current checkout
 
-The npm package above is published by upstream. To install the code from
-`cmstar/tokendash`, use Node.js 22 or 24 and run this from the checkout on
+The npm package above is published by upstream. You can install this fork directly
+from GitHub, including a specific commit, without publishing an npm package or
+creating a version tag. Use **npm 12.2.1** with Node.js **22.22.2+ (22.x)**,
+**24.15.0+ (24.x)**, or **26+**, and have Git available on PATH:
+
+```sh
+npm install -g npm@12.2.1
+npm install -g "git+https://github.com/cmstar/tokendash.git#main" --allow-git=root --allow-scripts="git+https://github.com/cmstar/tokendash.git" --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com
+tokendash --version
+```
+
+The first command is a one-time npm upgrade. The second command works in
+PowerShell, cmd.exe, Bash, and zsh. Replace `#main` with a commit SHA to install
+that revision. `--allow-git=root` permits the requested Git source, and
+`--allow-scripts` permits this repository's build hook; npm 12 requires these
+explicit permissions. The script permission uses the repository URL, not the
+upstream npm package name. The mirror-host option handles older commits whose
+lockfile contains an `npmmirror.com` download URL. The two registry options use
+the official npm registry for this command without changing your saved settings.
+They can be omitted for revisions whose lockfile uses only the npm registry.
+
+Older npm releases, including 11.16.0 and 11.21.1, contain the
+[Git global-install bug](https://github.com/npm/cli/issues/9406): dependency
+preparation inherits global mode, creates a link to npm's temporary clone, and
+leaves a broken command when the clone is removed. The
+[official fix](https://github.com/npm/pacote/pull/494) is included in npm 12.
+This affects Windows and Linux; creating a tag does not fix it. If you keep an
+older npm or Node.js version, use the checkout installer or tarball flow below.
+
+To install the current checkout, use Node.js 22 or 24 and run this on
 **Windows, macOS, or Linux** (PowerShell, cmd.exe, Bash, and zsh use the same command):
 
 ```sh
@@ -206,14 +234,18 @@ npm run install:global -- "git+https://github.com/cmstar/tokendash.git#main"
 The selected Git branch or commit must include this fork's `prepare` build hook.
 Changes that have not been pushed are only available through the local-checkout
 method. Replace `#main` with a commit SHA to install a specific revision.
+On npm 12, Git-source preparation uses the official npm registry and translates
+the mirror URL found in older commits. Local-checkout installs retain your
+configured registry.
 
 Without a checkout containing the installer, use the equivalent two-step flow.
 On **macOS/Linux with Bash or zsh**:
 
 ```sh
 tarball=$(npm pack --global=false --foreground-scripts=false --json \
+  --allow-git=all --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com \
   "git+https://github.com/cmstar/tokendash.git#main" | \
-  node -e "let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => console.log(JSON.parse(s)[0].filename));")
+  node -e "let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => { const p = JSON.parse(s); console.log((Array.isArray(p) ? p[0] : p['@zhangferry-dev/tokendash']).filename); });")
 npm install -g "./$tarball"
 tokendash --version
 ```
@@ -221,26 +253,31 @@ tokendash --version
 On **Windows with PowerShell**:
 
 ```powershell
-$packed = npm pack --global=false --foreground-scripts=false --json "git+https://github.com/cmstar/tokendash.git#main" | ConvertFrom-Json
-npm install -g ".\$($packed[0].filename)"
+$packed = npm pack --global=false --foreground-scripts=false --json --allow-git=all --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com "git+https://github.com/cmstar/tokendash.git#main" | ConvertFrom-Json
+$item = @($packed)[0]
+if (-not $item.PSObject.Properties['filename']) { $item = $item.'@zhangferry-dev/tokendash' }
+npm install -g ".\$($item.filename)"
 tokendash --version
 ```
 
 The tarball filename is read from npm's output so upgrades do not accidentally
 reuse an older version such as `1.9.0`. `--foreground-scripts=false` keeps build logs
-out of the JSON output; it does not disable the build.
+out of the JSON output; it does not disable the build. On npm 12, `pack` needs
+`--allow-git=all` because it does not treat its Git argument as a root dependency;
+the direct `install -g` command above can use the narrower `--allow-git=root`.
+The snippets accept both npm 10/11's JSON array and npm 12's object keyed by
+package name.
 
 Source installs need a build because `dist/` is not tracked in Git. The `prepare`
 hook builds the frontend and server during dependency installation and packing;
 `prepack` alone does not cover local-directory installation. See the
 [npm lifecycle documentation](https://docs.npmjs.com/cli/v11/using-npm/scripts/#life-cycle-scripts).
 
-On Windows with npm 11.16.0, direct `npm install -g <git-url>` was observed to
-propagate global-install settings into Git dependency preparation, replace the
-package with a link to npm's temporary clone, and leave a broken command when
-that clone was removed. The installer and two-step commands above keep source preparation
-local with `--global=false` and apply `-g` only to the finished tarball. Do not
-use `--ignore-scripts` while preparing the source.
+The installer and two-step commands above keep source preparation local with
+`--global=false` and apply `-g` only to the finished tarball, so they also work
+around the older npm bug. With npm 10, omit `--allow-git=all` from the manual
+packing commands; that version predates this option. Do not use `--ignore-scripts`
+while preparing the source.
 
 `npm install -g .` instead links the current checkout. Install its dependencies
 first and keep the checkout and its `node_modules` in place, or use the tarball
@@ -253,6 +290,57 @@ two modes: an inclusive date range, or Last X days with suggested day counts
 and a manual number input. Click Apply to update the dashboard and Sessions.
 Recent-day windows include today and move forward each day; the selected
 mode and value are remembered when you reload the page.
+
+### Codex Time dashboard
+
+Select **Codex → Time** to view duration statistics with the same date and
+project filters as the usage dashboard. Time is available only for Codex.
+
+- **Agent work time** adds the durations of completed or interrupted turns,
+  including the main agent and delegated subagents. Parallel turns add up.
+- **Elapsed time** merges overlapping intervals, so concurrent agents and
+  conversations count only once. Tool execution and waiting within a turn
+  are included; gaps between turns are excluded. This measures recorded
+  turn lifetimes, not CPU time or time spent generating tokens.
+- **Daily averages** divide by all calendar days in the selected range,
+  including days without activity. ALL starts on the first recorded day
+  matching the filters and ends today.
+- **Avg conversation time** averages elapsed time within each main
+  conversation and its delegated subagents. Only conversations with valid
+  timing in the selected range contribute; overlapping conversations remain
+  separate for this average.
+- **Avg turn time** averages the full elapsed duration of each completed
+  main-agent question-and-answer turn, rather than an entire session. Turns
+  are selected by their completion date and the main agent's project; a turn
+  crossing midnight retains its full duration. Waiting for delegated agents
+  is already included in the main turn and is not added again. Interrupted,
+  ongoing, child-agent, and system-agent turns do not enter this average.
+  Simultaneous questions count separately, and no completed turns shows `—`.
+
+The Time dashboard includes daily work time by model, daily elapsed time,
+project rankings for both measures, an hourly work-time heatmap, and a daily
+detail table. Heatmap cells show summed agent work time, so parallel work
+can exceed one hour in a single hourly cell. Daily and hourly boundaries use
+the reported dashboard timezone, currently Asia/Shanghai. Each project's
+elapsed time is calculated independently; adding project elapsed times can
+exceed the overall elapsed time when projects overlap.
+
+Daily detail also shows **Avg conversation time** and **Avg turn time**.
+The first averages each active session's elapsed time within that date; the
+second averages full durations of main-agent answers completed on that date.
+Days without eligible sessions or completed answers show `—`. The Total row
+uses the selected period's overall averages, matching the summary cards,
+rather than averaging the daily averages.
+
+**Include system agents** optionally includes Codex's internal agents, such
+as automatic reviews; it is off by default. Copied history is deduplicated
+before filtering. Ongoing or incomplete turns are excluded from duration
+totals. The dashboard reports missing timing, estimates derived from older
+event timestamps, and turns whose conversation lineage is unavailable.
+
+Timing uses the same persistent rollout index as token usage, including
+compressed history. This upgrade rebuilds that index once; later requests
+reuse parsed intervals and recalculate the selected date/project totals.
 
 ### Codex history and caching
 

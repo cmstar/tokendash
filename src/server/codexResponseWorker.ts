@@ -1,11 +1,15 @@
 import { parentPort } from 'node:worker_threads';
 import './appSettings.js';
 import type { AggregateOptions } from './codexParser.js';
+import type { TimingOptions } from './codexTiming.js';
 import { type BlockGranularity } from './claudeJsonlParser.js';
 
 type CodexParserModule = typeof import('./codexParser.js');
 
 interface SerializedAggregateOptions {
+  startDate?: string;
+  endDate?: string;
+  includeSystem?: boolean;
   groupBy?: AggregateOptions['groupBy'];
   project?: string | null;
   since?: string | null;
@@ -18,11 +22,15 @@ type WorkerRequest =
   | { id: number; kind: 'bundle'; options?: SerializedAggregateOptions }
   | { id: number; kind: 'daily'; options?: SerializedAggregateOptions }
   | { id: number; kind: 'projects'; options?: SerializedAggregateOptions }
+  | { id: number; kind: 'timing'; options?: SerializedAggregateOptions }
   | { id: number; kind: 'blocks'; options?: SerializedAggregateOptions };
 
-function deserializeOptions(options?: SerializedAggregateOptions): Partial<AggregateOptions> & { granularity?: BlockGranularity } | undefined {
+function deserializeOptions(options?: SerializedAggregateOptions): Partial<AggregateOptions> & TimingOptions & { granularity?: BlockGranularity } | undefined {
   if (!options) return undefined;
   return {
+    startDate: options.startDate,
+    endDate: options.endDate,
+    includeSystem: options.includeSystem,
     groupBy: options.groupBy,
     project: options.project,
     since: options.since == null ? options.since : new Date(options.since),
@@ -49,6 +57,8 @@ async function run(request: WorkerRequest): Promise<unknown> {
       return parser.getBlocksResponse(options);
     case 'bundle':
       return parser.getCodexResponses(options);
+    case 'timing':
+      return parser.getTimingResponse(options);
   }
 }
 

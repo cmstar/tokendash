@@ -9,6 +9,7 @@ import { fetchDaily, fetchProjects, fetchBlocks, fetchAgents, fetchAnalytics } f
 import type { AgentsResponse } from '../api/client.js';
 import { useCcusageData } from '../hooks/useCcusageData.js';
 import { useLocalStorageState } from '../hooks/useLocalStorageState.js';
+import { useTimingData } from '../hooks/useTimingData.js';
 import { formatDate, formatTokens, formatPercent, formatProjectName } from '../utils/formatters.js';
 import { useCurrency } from '../hooks/useCurrency.js';
 import { cacheHitRate as calculateCacheHitRate } from '../utils/cacheCalculations.js';
@@ -17,11 +18,12 @@ import { modelTokenMode, modelBreakdownTokens } from '../utils/modelAggregation.
 import { getPricing, GO_PRICING_SOURCE } from '../../shared/modelPricing.js';
 import { shortModelName } from '../utils/modelNames.js';
 import { CustomTimeRangePicker } from './CustomTimeRangePicker.js';
-import { filterByTime, customTimeRangeError, localDateKey, type CustomTimeRange, type TimeRangeKey } from '../../shared/dateRange.js';
+import { filterByTime, customTimeRangeError, localDateKey, timeRangeDates, type CustomTimeRange, type TimeRangeKey } from '../../shared/dateRange.js';
 import { AnalyticsSection } from './AnalyticsSection.js';
 import { CodexDataSourcesSettings } from './CodexDataSourcesSettings.js';
 import { AGENT_LABELS } from '../utils/agentAggregation.js';
 import { SessionAnalyticsSection } from './SessionAnalyticsSection.js';
+import { TimeDashboard } from './TimeDashboard.js';
 import type { DailyEntry, MetricMode } from '../../shared/types.js';
 
 const C = ['#4f46e5', '#10b981', '#f59e0b', '#ec4899', '#0ea5e9', '#8b5cf6', '#ef4444', '#14b8a6'];
@@ -110,7 +112,7 @@ function FilterTab({ options, value, onChange }: { options: readonly { key: stri
 
 function ProjectSelect({ projects, value, onChange }: { projects: string[]; value: string; onChange: (v: string) => void }) {
   return (
-    <select value={value} onChange={e => onChange(e.target.value)}
+    <select aria-label="Project" value={value} onChange={e => onChange(e.target.value)}
       className="bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-stone-800 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 max-w-[220px]">
       <option value="">All Projects</option>
       {projects.map(p => <option key={p} value={p}>{formatProjectName(p, projects)}</option>)}
@@ -248,10 +250,28 @@ export function Dashboard() {
   const lastUpdatedStr = dailyData.lastUpdated
     ? dailyData.lastUpdated.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : null;
-  const [metric, setMetric] = useLocalStorageState<MetricMode>('dashboard_metric', 'tokens');
+  const [storedMetric, setMetric] = useLocalStorageState<MetricMode>('dashboard_metric', 'tokens');
+  const metric = storedMetric === 'time' && agent !== 'codex' ? 'tokens' : storedMetric;
+  const isTime = metric === 'time';
+  const [includeSystem, setIncludeSystem] = useLocalStorageState('dashboard_timing_includeSystem', false);
+  const timingDates = timeRangeDates(timeRange, customRange, today);
+  const timingData = useTimingData(isTime && agent === 'codex', {
+    startDate: timingDates?.startDate,
+    endDate: timingDates?.endDate ?? today,
+    project,
+    includeSystem,
+  }, sessionRefreshVersion);
+  const [timingProjects, setTimingProjects] = useState<string[]>([]);
+  useEffect(() => {
+    if (timingData.data) setTimingProjects(timingData.data.availableProjects);
+  }, [timingData.data]);
+  useEffect(() => {
+    if (storedMetric === 'time' && agent !== 'codex') setMetric('tokens');
+  }, [storedMetric, agent, setMetric]);
   const { formatCost, currency, setCurrency, exchangeRate } = useCurrency();
 
   const handleAgentChange = (a: 'all' | 'claude' | 'codex' | 'openclaw' | 'opencode' | 'pi') => {
+    if (a !== 'codex' && metric === 'time') setMetric('tokens');
     setAgent(a);
     setProject('');
     setAgentMenuOpen(false);
@@ -259,12 +279,16 @@ export function Dashboard() {
   };
 
   // Progressive loading: only wait for daily data to show the page shell
-  const coreLoading = dailyData.loading && !dailyData.data;
-  const coreError = dailyData.error && !dailyData.data;
+  const coreLoading = !isTime && dailyData.loading && !dailyData.data;
+  const coreError = !isTime && dailyData.error && !dailyData.data;
   const isTokens = metric === 'tokens';
   const dataKey = isTokens ? 'tokens' : 'cost';
 
-  const projectList = useMemo(() => Object.keys(projectsData.data?.projects || {}).sort(), [projectsData.data]);
+  const projectList = useMemo(() => [...new Set([
+    ...Object.keys(projectsData.data?.projects || {}),
+    ...(isTime ? timingProjects : []),
+    ...(isTime && project ? [project] : []),
+  ])].sort(), [projectsData.data, isTime, timingProjects, project]);
 
   // Filtered daily data: dailyData is canonical for all-project totals.
   // projectsData can be stale independently because the daemon caches each route
@@ -654,7 +678,7 @@ export function Dashboard() {
     </div>
   );
 
-  if (!dailyData.data) return null;
+  if (!dailyData.data && !isTime) return null;
 
   return (
     <div className="max-w-[1440px] mx-auto px-6 py-10">
@@ -716,8 +740,8 @@ export function Dashboard() {
             <div className="flex flex-col gap-2">
               <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider">Metric</span>
               <div className="flex items-center gap-1.5">
-                <FilterTab options={[{ key: 'tokens', label: 'Tokens' }, { key: 'usd', label: 'Cost' }, { key: 'sessions', label: 'Sessions' }]} value={metric} onChange={v => setMetric(v as MetricMode)} />
-                {!isTokens && modelAgg.length > 0 && (
+                <FilterTab options={[{ key: 'tokens', label: 'Tokens' }, { key: 'usd', label: 'Cost' }, ...(agent === 'codex' ? [{ key: 'time', label: 'Time' }] : []), { key: 'sessions', label: 'Sessions' }]} value={metric} onChange={v => setMetric(v as MetricMode)} />
+                {!isTokens && !isTime && modelAgg.length > 0 && (
                   <div className="relative">
                     <button
                       onClick={e => { e.stopPropagation(); setShowPricing(v => !v); }}
@@ -755,21 +779,24 @@ export function Dashboard() {
               </div>
             </div>
 
-            <div className="w-px h-10 bg-stone-200/60 hidden sm:block"></div>
+            {!isTime && <><div className="w-px h-10 bg-stone-200/60 hidden sm:block"></div>
             <div className="flex flex-col gap-2">
               <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider">Currency</span>
               <div className="flex items-center gap-1.5">
                 <FilterTab options={[{ key: 'USD', label: '$ USD' }, { key: 'CNY', label: '¥ CNY' }]} value={currency} onChange={v => setCurrency(v as 'USD' | 'CNY')} />
 
               </div>
-            </div>
+            </div></>}
           </div>
         </div>
       </div>
 
-      <p className="mb-4 text-xs text-stone-500">费用按模型名称估算，忽略供应商；Go 模型使用 Go 单价，其他已配置模型使用参考单价。不是订阅账单。缓存节省按基础单价估算。</p>
-      {filteredDaily.some(day => day.modelBreakdowns.some(model => !getPricing(model.modelName))) && <p role="status" className="mb-4 text-xs text-amber-700">部分模型价格未配置：有会话费用时保留原值，否则未计价；合计可能不完整。</p>}
-      {metric === 'sessions' ? (
+      {!isTime && <p className="mb-4 text-xs text-stone-500">费用按模型名称估算，忽略供应商；Go 模型使用 Go 单价，其他已配置模型使用参考单价。不是订阅账单。缓存节省按基础单价估算。</p>}
+      {!isTime && filteredDaily.some(day => day.modelBreakdowns.some(model => !getPricing(model.modelName))) && <p role="status" className="mb-4 text-xs text-amber-700">部分模型价格未配置：有会话费用时保留原值，否则未计价；合计可能不完整。</p>}
+      {isTime ? <TimeDashboard data={timingData.data} loading={timingData.loading} error={timingData.error}
+        includeSystem={includeSystem} onIncludeSystemChange={setIncludeSystem}
+        onRetry={() => setSessionRefreshVersion(version => version + 1)}
+        startDate={timingDates?.startDate} endDate={timingDates?.endDate ?? today} isToday={timeRange === 'today'} /> : metric === 'sessions' ? (
         <SessionAnalyticsSection key={`${agent}:${project}:${timeRange}:${customRange.startDate}:${customRange.endDate}:${customRange.days}`} agent={agent} project={project} range={timeRange} startDate={timeRange === 'custom' ? customRange.startDate : undefined} endDate={timeRange === 'custom' ? customRange.endDate : undefined} days={timeRange === 'recent' ? customRange.days : undefined} refreshVersion={sessionRefreshVersion} />
       ) : <>
       {agent === 'all' && <p className="mb-4 text-xs text-stone-500">汇总来源：{(agentsInfo?.available ?? []).map(source => AGENT_LABELS[source] || source).join('、')}。代码变更与工具分析仅统计支持该能力的来源。</p>}

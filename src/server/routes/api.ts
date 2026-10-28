@@ -1,5 +1,6 @@
 import { type Router, type Request, type Response } from 'express';
 import { getDaily } from './daily.js';
+import { getTiming } from './timing.js';
 import { getMonthly } from './monthly.js';
 import { getSession } from './session.js';
 import { getProjects } from './projects.js';
@@ -150,6 +151,7 @@ export function registerApiRoutes(router: Router, appInfo: AppInfo): void {
   router.get('/settings', getSettings);
   router.put('/settings/codex-data-paths', updateCodexDataPaths);
   router.get('/daily', getDaily);
+  router.get('/timing', getTiming);
   router.get('/monthly', getMonthly);
   router.get('/session', getSession);
   router.get('/projects', getProjects);
