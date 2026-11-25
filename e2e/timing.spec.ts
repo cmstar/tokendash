@@ -150,7 +150,7 @@ test.describe('Codex Time metric', () => {
     await expect(page.getByRole('button', { name: 'Time', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^(Tokens|Cost|Time|Sessions)$/ })).toHaveText(['Tokens', 'Cost', 'Sessions']);
     await expect(page.locator('span:text-is("Total tokens")')).toBeVisible();
-    await selectAgent(page, '所有 Agent');
+    await selectAgent(page, 'All Agents');
     await expect(page.getByRole('button', { name: 'Time', exact: true })).toHaveCount(0);
     await expect(page.locator('span:text-is("Total tokens")')).toBeVisible();
     await selectAgent(page, 'Codex');
@@ -239,7 +239,7 @@ test.describe('Codex Time metric', () => {
     await expectKpi(page, 'Daily avg work time', '2h');
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('dashboard_timing_exclude_zero_days') || 'null'))).toBe(true);
     const refreshRequest = timingRequest(page, url => url.searchParams.get('refresh') === '1');
-    await page.getByRole('button', { name: '刷新数据（每 60 秒自动刷新）' }).click();
+    await page.getByRole('button', { name: /Refresh data/ }).click();
     await refreshRequest;
     await expect(excludeZeroDays).toBeChecked();
     await expectKpi(page, 'Daily avg elapsed time', '1h 20m');

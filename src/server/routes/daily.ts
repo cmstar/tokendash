@@ -7,6 +7,7 @@ import { getDailyResponse as getOpenClawDailyResponse } from '../openclawParser.
 import { getDailyResponse as getOpencodeDailyResponse } from '../opencodeParser.js';
 import { getDailyResponse as getClaudeDailyResponse } from '../claudeJsonlParser.js';
 import { getDailyResponse as getPiDailyResponse } from '../piParser.js';
+import { getDailyResponse as getDeepseekDailyResponse } from '../deepseekParser.js';
 
 export async function getDaily(req: Request, res: Response): Promise<void> {
   const agent = req.query.agent as string || 'claude';
@@ -49,6 +50,8 @@ async function fetchDailyData(agent: string) {
     return validateDaily(getOpenClawDailyResponse());
   } else if (agent === 'opencode') {
     return validateDaily(getOpencodeDailyResponse());
+  } else if (agent === 'deepseek') {
+    return validateDaily(getDeepseekDailyResponse());
   } else if (agent === 'pi') {
     return validateDaily(getPiDailyResponse());
   } else {

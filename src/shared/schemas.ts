@@ -26,7 +26,10 @@ export function validateTiming(data: unknown) {
   return TimingResponseSchema.parse(data);
 }
 
+const SourceErrorsSchema = z.array(z.object({ agent: z.string(), message: z.string() })).optional();
+
 export const ModelBreakdownSchema = z.object({
+  costAvailable: z.boolean().optional(),
   totalTokens: z.number().optional(),
   modelName: z.string(),
   inputTokens: z.number().default(0),
@@ -38,6 +41,7 @@ export const ModelBreakdownSchema = z.object({
 });
 
 export const DailyEntrySchema = z.object({
+  costAvailable: z.boolean().optional(),
   date: z.string(),
   inputTokens: z.number().default(0),
   outputTokens: z.number().default(0),
@@ -51,6 +55,7 @@ export const DailyEntrySchema = z.object({
 });
 
 export const TotalsSchema = z.object({
+  costAvailable: z.boolean().optional(),
   inputTokens: z.number().default(0),
   outputTokens: z.number().default(0),
   cacheCreationTokens: z.number().default(0),
@@ -61,6 +66,7 @@ export const TotalsSchema = z.object({
 });
 
 export const DailyResponseSchema = z.object({
+  sourceErrors: SourceErrorsSchema,
   daily: z.array(DailyEntrySchema).default([]),
   totals: TotalsSchema,
 });
@@ -71,6 +77,7 @@ export const ProjectEntrySchema = z.object({
 });
 
 export const ProjectsResponseSchema = z.object({
+  sourceErrors: SourceErrorsSchema,
   projects: z.record(z.array(DailyEntrySchema).default([])).default({}),
 });
 
@@ -83,6 +90,7 @@ export function validateProjects(data: unknown) {
 }
 
 const BlockEntrySchema = z.object({
+  costAvailable: z.boolean().optional(),
   id: z.string(),
   startTime: z.string(),
   endTime: z.string(),
@@ -102,6 +110,7 @@ const BlockEntrySchema = z.object({
 });
 
 export const BlocksResponseSchema = z.object({
+  sourceErrors: SourceErrorsSchema,
   blocks: z.array(BlockEntrySchema).default([]),
 });
 
@@ -134,6 +143,7 @@ const ProductivityKPIsSchema = z.object({
 });
 
 const AnalyticsResponseSchema = z.object({
+  sourceErrors: SourceErrorsSchema,
   codeChangeTrend: z.array(DailyCodeChangeSchema).default([]),
   toolUsageDistribution: z.array(ToolUsageEntrySchema).default([]),
   productivityKPIs: ProductivityKPIsSchema,
@@ -184,6 +194,7 @@ const SessionEventTypeSchema = z.enum([
 ]);
 
 const SessionUsageSchema = z.object({
+  cacheWriteTokens: z.number().optional(),  costAvailable: z.boolean().optional(),
   inputTokens: z.number().default(0),
   outputTokens: z.number().default(0),
   cacheReadTokens: z.number().default(0),
@@ -192,6 +203,7 @@ const SessionUsageSchema = z.object({
 });
 
 export const SessionSummarySchema = z.object({
+  costAvailable: z.boolean().optional(),
   id: z.string(),
   agent: z.string(),
   project: z.string().optional(),
@@ -248,7 +260,10 @@ export const SessionDetailSchema = z.object({
 });
 
 const SessionAnalyticsResponseSchema = z.object({
+  sourceErrors: SourceErrorsSchema,
+
   summary: z.object({
+    costAvailable: z.boolean().optional(),
     totalTokens: z.number().optional(),
     totalCost: z.number().optional(),
     sessionCount: z.number().default(0),

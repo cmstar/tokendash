@@ -192,7 +192,7 @@ test.describe('Dashboard refresh', () => {
       return url.pathname === `/api/${path}` && url.searchParams.get('refresh') === '1';
     }));
 
-    await page.locator('button[title^="刷新数据"]').click();
+    await page.locator('button[title^="Refresh data"]').click();
     await Promise.all(refreshRequests);
   });
 
@@ -211,11 +211,11 @@ test.describe('Dashboard refresh', () => {
 test.describe('Codex data-source settings', () => {
   test('defaults to including archives and persists disabling and re-enabling them', async ({ page }) => {
     await setupPage(page, { agents: ['codex'] });
-    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const toggle = page.getByRole('switch', { name: 'Include archived conversations' });
     await expect(toggle).toBeChecked();
-    await expect(page.getByLabel('显示币种')).toBeVisible();
-    await expect(page.getByLabel('人民币汇率')).toBeVisible();
+    await expect(page.getByLabel('Display currency')).toBeVisible();
+    await expect(page.getByLabel('CNY exchange rate')).toBeVisible();
     for (const enabled of [false, true]) {
       await toggle.setChecked(enabled);
       const saved = page.waitForRequest(request => request.url().includes('/api/settings/codex-data-paths') && request.method() === 'PUT');
@@ -225,7 +225,7 @@ test.describe('Codex data-source settings', () => {
       await refreshed;
       await expect(page.getByText('Saved. Dashboard data is refreshing from the configured sources.')).toBeVisible();
       await page.getByRole('button', { name: 'Close settings' }).click();
-      await page.getByRole('button', { name: '设置', exact: true }).click();
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await expect(toggle).toBeChecked({ checked: enabled });
     }
   });
@@ -233,10 +233,10 @@ test.describe('Codex data-source settings', () => {
   test('opens custom path settings and saves configured sources', async ({ page }) => {
     await setupPage(page);
     const settingsRequest = page.waitForResponse(response => response.url().includes('/api/settings') && response.request().method() === 'GET');
-    await page.locator('button[aria-label="设置"]').click();
+    await page.locator('button[aria-label="Settings"]').click();
     await settingsRequest;
 
-    await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
     await expect(page.locator('text=Multiple paths are supported')).toBeVisible();
     await expect(page.locator('textarea')).toHaveValue('/Users/test/.custom-codex');
 
@@ -370,7 +370,7 @@ test.describe('Time range: Custom', () => {
       const url = new URL(req.url());
       return url.pathname === '/api/session-analytics' && Boolean(url.searchParams.get('model'));
     });
-    await page.getByLabel('会话模型').selectOption({ index: 1 });
+    await page.getByLabel('Session model').selectOption({ index: 1 });
     expect(new URL((await modelRequest).url()).searchParams.get('days')).toBe('5');
   });
 
@@ -407,7 +407,7 @@ test.describe('Time range: Custom', () => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     await page.clock.setFixedTime(tomorrow);
-    await page.getByRole('button', { name: '刷新数据（每 60 秒自动刷新）' }).click();
+    await page.getByRole('button', { name: /Refresh data/ }).click();
     // The fixed fixture has no entry for tomorrow, leaving today and yesterday.
     await expect(page.locator('table tbody tr')).toHaveCount(2);
     await expect(page.getByText(/^Applied: Last 3 days/)).toContainText(localDateKey(tomorrow));
@@ -458,7 +458,7 @@ test.describe('Time range: Custom', () => {
       const url = new URL(req.url());
       return url.pathname === '/api/session-analytics' && Boolean(url.searchParams.get('model'));
     });
-    await page.getByLabel('会话模型').selectOption({ index: 1 });
+    await page.getByLabel('Session model').selectOption({ index: 1 });
     const modelUrl = new URL((await modelRequest).url());
     expect(modelUrl.searchParams.get('range')).toBe('custom');
     expect(modelUrl.searchParams.get('startDate')).toBe(startDate);
@@ -467,7 +467,7 @@ test.describe('Time range: Custom', () => {
       const url = new URL(req.url());
       return url.pathname === '/api/session-analytics' && url.searchParams.get('status') === 'complete';
     });
-    await page.getByLabel('会话状态').selectOption('complete');
+    await page.getByLabel('Session status').selectOption('complete');
     const statusUrl = new URL((await statusRequest).url());
     expect(statusUrl.searchParams.get('model')).toBe(modelUrl.searchParams.get('model'));
     expect(statusUrl.searchParams.get('startDate')).toBe(startDate);
@@ -548,7 +548,7 @@ test.describe('Agent switching', () => {
     await expect(page.getByRole('menuitemradio', { name: 'OpenClaw' })).not.toBeVisible();
   });
 
-  test('仅一个来源时仍可切换到所有 Agent', async ({ page }) => {
+  test('a single source can still switch to All Agents', async ({ page }) => {
     await setupPage(page, { agents: ['claude'] });
 
     await expect(page.locator('button:has-text("Claude Code")')).toBeVisible();
