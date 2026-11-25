@@ -54,8 +54,8 @@ function identity(meta: Record<string, unknown>): ThreadIdentity {
   };
 }
 
-/** Stored in the existing usage index: no second file read or decompression. */
-export function parseCodexTiming(records: CodexRecord[], meta: Record<string, unknown>): ParsedTiming {
+/** Extract timing while the usage parser walks the same records. */
+export function parseCodexTiming(records: Iterable<CodexRecord>, meta: Record<string, unknown>): ParsedTiming {
   const own = identity(meta);
   const turns = new Map<string, ParsedTimingTurn>();
   const owners = new Map<string, ThreadIdentity>();

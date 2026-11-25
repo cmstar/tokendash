@@ -9,7 +9,7 @@ import { type BlockGranularity } from './claudeJsonlParser.js';
 import { buildUsageFileIndex } from './usageFileIndex.js';
 import { buildCodexTiming, parseCodexTiming, type ParsedTiming, type TimingOptions } from './codexTiming.js';
 import { getCodexSessionDirs, isCodexSessionDirAccessible } from './codexDataSources.js';
-import { readCodexRollout, parseCodexRollout, isInheritedCodexRecord, type CodexRecord } from './codexRollout.js';
+import { firstCodexMetadata, readCodexRollout, isInheritedCodexRecord, type CodexRecord } from './codexRollout.js';
 
 // ---------------------------------------------------------------------------
 // Zod schemas for JSONL event validation (format change detector)
@@ -96,7 +96,7 @@ interface AggregateBucket {
   models: Map<string, TokenAccumulator>;
 }
 
-const CODEX_INDEX_VERSION = 'codex-session-v12-timing';
+const CODEX_INDEX_VERSION = 'codex-session-v13-streaming';
 const DEFAULT_TZ = 'Asia/Shanghai';
 
 interface SerializedAggregateBucket {
@@ -194,24 +194,32 @@ function getSessionDirs(): string[] {
  * subagent's own events. ccusage identifies that replay by the repeated first
  * token-count second; preserve the cumulative baseline but do not count it.
  */
-function detectReplaySecond(records: CodexRecord[], meta: Record<string, unknown>): string | null {
-  if (!meta.forked_from_id && !JSON.stringify(meta.source ?? '').includes('thread_spawn')) return null;
-  if (typeof meta.subagent_history_start_ordinal === 'number') return null;
+function usageHints(records: Iterable<CodexRecord>, meta: Record<string, unknown>) {
+  const modernSnapshots = new Set<string>();
+  const modernTurns = new Set<string>();
+  const firstSeconds: string[] = [];
+  const checkReplay = typeof meta.subagent_history_start_ordinal !== 'number'
+    && (meta.forked_from_id || JSON.stringify(meta.source ?? '').includes('thread_spawn'));
 
-  let firstSecond: string | null = null;
-  for (const obj of records) {
-    if (obj.type !== 'event_msg') continue;
-    const payload = obj.payload;
-    if (payload.type !== 'token_count') continue;
-    const info = (payload.info as Record<string, unknown>) || {};
-    if (!info.last_token_usage && !info.total_token_usage) continue;
-    const second = (obj.timestamp || '').slice(0, 19);
-    if (!second) continue;
-    if (!firstSecond) firstSecond = second;
-    else if (second === firstSecond) return firstSecond;
-    else return null;
+  for (const row of records) {
+    if (row.type === 'token_usage_record') {
+      const response = ownResponse(row, meta);
+      if (response?.turn_id) modernTurns.add(response.turn_id);
+      if (response?.thread_token_usage) modernSnapshots.add(usageSnapshotKey(response.thread_token_usage));
+    } else if (checkReplay && firstSeconds.length < 2 && row.type === 'event_msg' && row.payload.type === 'token_count') {
+      const info = row.payload.info as Record<string, unknown> | null;
+      const second = typeof row.timestamp === 'string' ? row.timestamp.slice(0, 19) : undefined;
+      if (second && (info?.last_token_usage || info?.total_token_usage)) firstSeconds.push(second);
+    }
   }
-  return null;
+  const replaySecond = firstSeconds.length === 2 && firstSeconds[0] === firstSeconds[1] ? firstSeconds[0] : null;
+  return { modernSnapshots, modernTurns, replaySecond };
+}
+
+function ownResponse(row: CodexRecord, meta: Record<string, unknown>) {
+  if (!row.payload.usage || row.payload.thread_id !== meta.id || isInheritedCodexRecord(row, meta)) return undefined;
+  const result = ResponseUsageSchema.safeParse(row.payload);
+  return result.success ? result.data : undefined;
 }
 
 export function isSessionsDirAccessible(): boolean {
@@ -283,15 +291,16 @@ function realPathKey(path: string): string {
  * first occurrence of each cumulative total_token_usage snapshot should count.
  */
 export function parseCodexSession(filepath: string): ParsedSession | null {
-  let content: string;
   try {
-    content = readCodexRollout(filepath);
+    return readCodexRollout(filepath, records => parseUsageRecords(records, filepath));
   } catch (error) {
     console.warn(`[codexParser] Cannot read rollout ${filepath}: ${error instanceof Error ? error.message : 'read failed'}`);
     return null;
   }
+}
 
-  const { meta, records } = parseCodexRollout(content);
+function parseUsageRecords(records: Iterable<CodexRecord>, filepath: string): ParsedSession | null {
+  const meta = firstCodexMetadata(records);
   const sessionId = typeof meta.id === 'string' ? meta.id : '';
   if (!sessionId) return null;
   const cwd = typeof meta.cwd === 'string' ? meta.cwd : '';
@@ -304,21 +313,12 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
   const seenTotalUsageSnapshots = new Set<string>();
   const seenUsageEvents = new Set<string>();
   const seenResponses = new Set<string>();
-  const responseRecords = new Map<CodexRecord, z.infer<typeof ResponseUsageSchema>>();
-  const modernSnapshots = new Set<string>();
-  const modernTurns = new Set<string>();
-  for (const record of records) {
-    if (record.type !== 'token_usage_record' || !record.payload.usage || isInheritedCodexRecord(record, meta)) continue;
-    const result = ResponseUsageSchema.safeParse(record.payload);
-    if (!result.success || result.data.thread_id !== sessionId) continue;
-    responseRecords.set(record, result.data);
-    if (result.data.turn_id) modernTurns.add(result.data.turn_id);
-    if (result.data.thread_token_usage) modernSnapshots.add(usageSnapshotKey(result.data.thread_token_usage));
-  }
-  const replaySecond = detectReplaySecond(records, meta);
+  // A later response can supersede an earlier legacy counter. Collect just
+  // their identities, then stream usage and timing together in file order.
+  const { modernSnapshots, modernTurns, replaySecond } = usageHints(records, meta);
   let skippingReplay = replaySecond !== null;
 
-  for (const obj of records) {
+  function addUsage(obj: CodexRecord) {
     const { type, payload } = obj;
     if (type === 'turn_context' || (type === 'event_msg' && payload.type === 'task_started')) {
       currentTurnId = typeof payload.turn_id === 'string' ? payload.turn_id : '';
@@ -333,11 +333,11 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
       }
     }
 
-    const response = responseRecords.get(obj);
+    const response = type === 'token_usage_record' ? ownResponse(obj, meta) : undefined;
     if (response) {
       if (response.turn_id) currentTurnId = response.turn_id;
       if (response.thread_token_usage) previousTotalUsage = response.thread_token_usage;
-      if (seenResponses.has(response.response_id)) continue;
+      if (seenResponses.has(response.response_id)) return;
       seenResponses.add(response.response_id);
       const rawEvent = subtractTokenUsage(response.usage, null);
       tokenEvents.push(withLongContextUsage({
@@ -349,7 +349,7 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
         usageSnapshotKey: response.thread_token_usage ? usageSnapshotKey(response.thread_token_usage) : undefined,
         cachedInputTokens: Math.min(rawEvent.cachedInputTokens, rawEvent.inputTokens),
       }));
-      continue;
+      return;
     }
 
     // Extract token counts from event_msg with nested token_count payload.
@@ -360,13 +360,13 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
         const parseResult = TokenCountPayloadSchema.safeParse(payload);
         if (!parseResult.success) {
           console.warn(`[codexParser] Schema validation failed in ${filepath}:`, parseResult.error.message);
-          continue;
+          return;
         }
         const info = parseResult.data.info;
-        if (!info) continue;
+        if (!info) return;
         if (isInheritedCodexRecord(obj, meta) || (skippingReplay && timestamp.slice(0, 19) === replaySecond)) {
           previousTotalUsage = info.total_token_usage;
-          continue;
+          return;
         }
         skippingReplay = false;
         const totalUsageKey = usageSnapshotKey(info.total_token_usage);
@@ -375,16 +375,16 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
         // including inherited/child usage, so adding it would count twice.
         if (modernSnapshots.has(totalUsageKey) || modernTurns.has(currentTurnId)) {
           previousTotalUsage = info.total_token_usage;
-          continue;
+          return;
         }
-        if (seenTotalUsageSnapshots.has(totalUsageKey)) continue;
+        if (seenTotalUsageSnapshots.has(totalUsageKey)) return;
         seenTotalUsageSnapshots.add(totalUsageKey);
 
         const rawEvent = chooseCodexUsageEvent(info.last_token_usage, info.total_token_usage, previousTotalUsage);
         previousTotalUsage = info.total_token_usage;
 
         if (rawEvent.inputTokens === 0 && rawEvent.cachedInputTokens === 0 && rawEvent.outputTokens === 0 && rawEvent.reasoningOutputTokens === 0) {
-          continue;
+          return;
         }
 
         const event = withLongContextUsage({
@@ -405,7 +405,7 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
           event.totalTokens,
         ].join(':');
         if (seenUsageEvents.has(eventKey)) {
-          continue;
+          return;
         }
         seenUsageEvents.add(eventKey);
         tokenEvents.push(event);
@@ -413,9 +413,14 @@ export function parseCodexSession(filepath: string): ParsedSession | null {
     }
   }
 
-  if (!sessionId) return null;
-
-  return { id: sessionId, cwd, model, createdAt, tokenEvents, timing: parseCodexTiming(records, meta) };
+  function* recordsWithUsage() {
+    for (const row of records) {
+      addUsage(row);
+      yield row;
+    }
+  }
+  const timing = parseCodexTiming(recordsWithUsage(), meta);
+  return { id: sessionId, cwd, model, createdAt, tokenEvents, timing };
 }
 
 /** Parse all Codex sessions. */

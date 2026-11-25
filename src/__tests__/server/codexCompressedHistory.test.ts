@@ -1,6 +1,7 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import * as zlib from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as rollout from '../../server/codexRollout.js';
 import { buildCodexResponsesFromSessions, deduplicateParsedSessions, getTimingResponse, parseAllSessions, parseCodexSession, scanCodexSessions } from '../../server/codexParser.js';
@@ -19,7 +20,7 @@ const text = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).join('\n'
 
 // A standards-compliant single-segment Zstd frame with a raw block, so fixtures
 // can be generated even on Node 20, which has neither compression nor decompression.
-function zstdFrame(value: string): Buffer {
+function zstdFrame(value: string | Buffer): Buffer {
   const body = Buffer.from(value);
   const header = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0xa0, 0, 0, 0, 0]);
   header.writeUInt32LE(body.length, 5);
@@ -56,21 +57,56 @@ afterEach(() => {
 });
 
 describe('compressed Codex rollouts', () => {
+  const unicodeFrame = Buffer.from('KLUv/WDeAx0CAKQDeyJ0eXBlIjoiZXZlbnRfbXNnIiwicGF5bG9hZCI6eyJtZXNzYWdlIjoiQ29kZXgg5Y6G5Y+yIn19CgEAFsr/AgU=', 'base64');
+  function readFrames(bytes: Buffer, useNative: boolean) {
+    const path = join(root, 'test.jsonl.zst');
+    writeFileSync(path, bytes);
+    return rollout.readCodexRollout(path, rows => [...rows], useNative);
+  }
   it.each([true, false])('decodes actual compressed Unicode data with native preference=%s', useNative => {
-    const bytes = Buffer.from('KLUv/WAUBKUAAGhDb2RleCDljoblj7IKAQAEwT+/', 'base64');
-    expect(Buffer.from(rollout.decompressCodexRollout(bytes, useNative)).toString()).toBe('Codex 历史\n'.repeat(100));
+    expect(readFrames(unicodeFrame, useNative)[0].payload.message).toBe('Codex 历史'.repeat(100));
   });
 
   it.each([true, false])('rejects a truncated compressed frame with native preference=%s', useNative => {
-    const bytes = Buffer.from('KLUv/WAUBKUAAGhDb2RleCDljoblj7IKAQAEwT+/', 'base64');
-    expect(() => rollout.decompressCodexRollout(bytes.subarray(0, 15), useNative)).toThrow();
+    expect(() => readFrames(Buffer.concat([unicodeFrame, unicodeFrame.subarray(0, 15)]), useNative)).toThrow();
+    const checksummed = Buffer.from('KLUv/SQd6QAAeyJ0eXBlIjoibm90ZSIsInBheWxvYWQiOnt9fQq0QuJd', 'base64');
+    expect(() => readFrames(checksummed.subarray(0, -1), useNative)).toThrow();
+  });
+
+  it.skipIf(!zlib.createZstdDecompress)('rejects a bad checksum after a complete native frame', () => {
+    const damaged = Buffer.from('KLUv/SQd6QAAeyJ0eXBlIjoibm90ZSIsInBheWxvYWQiOnt9fQq0QuJd', 'base64');
+    damaged[damaged.length - 1] ^= 1;
+    expect(() => readFrames(Buffer.concat([unicodeFrame, damaged]), true)).toThrow(/checksum/i);
   });
 
   it.each([true, false])('reads concatenated frames and skips metadata frames with native preference=%s', useNative => {
     const skipped = Buffer.from([0x50, 0x2a, 0x4d, 0x18, 2, 0, 0, 0, 42, 42]);
-    const bytes = Buffer.concat([zstdFrame('first\n'), skipped, zstdFrame('second\n')]);
-    expect(Buffer.from(rollout.decompressCodexRollout(bytes, useNative)).toString()).toBe('first\nsecond\n');
+    const message = user('跨帧中文');
+    const line = Buffer.from(JSON.stringify(message));
+    const split = line.indexOf('跨') + 1;
+    const bytes = Buffer.concat([zstdFrame(text([meta()]) + 'bad row\r\n'), zstdFrame(line.subarray(0, split)), skipped, zstdFrame(line.subarray(split))]);
+    expect(readFrames(bytes, useNative)).toEqual([meta(), message]);
   });
+
+  it('indexes usage and reads transcript details past 512 MiB inside one Zstd frame', () => {
+    // Each repeated pair of Zstd blocks encodes one valid, space-padded JSONL
+    // record. The entire fixture takes less than 200 KiB on disk.
+    function rawBlock(value: string, last = false) {
+      const bytes = Buffer.from(value);
+      const header = Buffer.alloc(3);
+      header.writeUIntLE(bytes.length * 8 + Number(last), 0, 3);
+      return Buffer.concat([header, bytes]);
+    }
+    const frameHeader = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0, 0x38]);
+    const spaceBlock = Buffer.from([2, 0, 16, 32]); // 128 KiB RLE
+    const padding = Buffer.concat([spaceBlock, rawBlock('{"type":"note","payload":{}}\n')]);
+    const tail = [context('old-turn'), user('文件末尾的提问'), legacy(321)];
+    const file = join(root, 'sessions', 'large.jsonl.zst');
+    writeFileSync(file, Buffer.concat([frameHeader, rawBlock(text([meta()])), ...Array(4096).fill(padding), rawBlock(text(tail), true)]));
+    expect(buildCodexResponsesFromSessions(parseAllSessions()).daily.totals.totalTokens).toBe(321);
+    expect(getSessionAnalytics('codex').sessions[0]).toMatchObject({ id: 'thread', userTurnCount: 1, totalTokens: 321 });
+    expect(getSessionDetail('codex', 'thread', undefined, true)?.events.find(event => event.type === 'user_message')?.content).toBe('文件末尾的提问');
+  }, 60_000);
 
   it('includes compressed live and archived files and prefers a live plain sibling', () => {
     write('same.jsonl.zst', [meta(), legacy(100)]);
@@ -88,6 +124,16 @@ describe('compressed Codex rollouts', () => {
     rmSync(plain);
     expect(parseCodexSession(plain)?.tokenEvents[0].totalTokens).toBe(150);
     expect(buildCodexResponsesFromSessions(parseAllSessions()).daily.totals.totalTokens).toBe(150);
+  });
+
+  it('reads a plain record across a UTF-8 chunk boundary and keeps a final line without LF', () => {
+    const head = text([meta()]);
+    const prefix = '{"type":"event_msg","payload":{"type":"user_message","message":"';
+    const body = 'a'.repeat(128 * 1024 - 1 - Buffer.byteLength(head + prefix)) + '中文';
+    const path = join(root, 'sessions', 'plain.jsonl');
+    writeFileSync(path, head + prefix + body + '"}}\r\n' + JSON.stringify(legacy(100)));
+    expect(rollout.readCodexRollout(path, rows => [...rows][1].payload.message)).toBe(body);
+    expect(parseCodexSession(path)?.tokenEvents[0].totalTokens).toBe(100);
   });
 
   it('reports a corrupt file without discarding healthy history', () => {
@@ -170,6 +216,19 @@ describe('Codex response usage and lineage', () => {
 });
 
 describe('persistent Codex metadata and usage caches', () => {
+  it('reindexes files cached as unreadable by the whole-file parser', () => {
+    const path = write('recovered.jsonl.zst', [meta(), user('Recovered'), legacy(123)]);
+    const { size, mtimeMs } = statSync(path);
+    const dir = join(root, 'index');
+    mkdirSync(dir);
+    for (const [name, parserVersion] of [
+      ['codex-sessions', 'codex-session-v12-timing'],
+      ['codex-transcripts', 'codex-transcripts-v1-zstd'],
+    ]) {
+      writeFileSync(join(dir, name + '.json'), JSON.stringify({ schemaVersion: 1, parserVersion, files: [{ path, size, mtimeMs, value: null }] }));
+    }
+    expect(getSessionAnalytics('codex').sessions[0]).toMatchObject({ id: 'thread', title: 'Recovered', totalTokens: 123 });
+  });
   it('reuses parsed timing intervals from compressed usage cache after restart without rereading history', () => {
     const started = Date.parse(stamp) / 1000;
     const file = write('timed.jsonl.zst', [meta(), context('timed'), legacy(100),
@@ -181,7 +240,7 @@ describe('persistent Codex metadata and usage caches', () => {
     expect(first.totals.workMs).toBe(120_000);
     expect(first.totals).toMatchObject({ completedTurnCount: 1, completedTurnElapsedMs: 120_000 });
     expect(first.daily[0]).toMatchObject({ conversationCount: 1, conversationElapsedMs: 120_000, completedTurnCount: 1, completedTurnElapsedMs: 120_000 });
-    expect(read).toHaveBeenCalledWith(file);
+    expect(read).toHaveBeenCalledWith(file, expect.any(Function));
     clearUsageFileIndexMemory();
     read.mockClear();
     expect(getTimingResponse({ startDate: '2026-10-01', endDate: '2026-10-01' })).toEqual(first);
@@ -194,7 +253,7 @@ describe('persistent Codex metadata and usage caches', () => {
     const active = write('active.jsonl', [meta('active'), context('active-turn'), legacy(200)]);
     const read = vi.spyOn(rollout, 'readCodexRollout');
     expect(getSessionAnalytics('codex').summary.sessionCount).toBe(2);
-    expect(read).toHaveBeenCalledWith(compressed);
+    expect(read).toHaveBeenCalledWith(compressed, expect.any(Function));
     const cached = JSON.parse(readFileSync(join(root, 'index', 'codex-transcripts.json'), 'utf8'));
     const cachedEvents = cached.files.flatMap((file: { value: { metadata: { events: object[] } } }) => file.value.metadata.events);
     expect(cachedEvents.some((event: object) => 'content' in event)).toBe(false);

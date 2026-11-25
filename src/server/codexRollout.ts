@@ -1,6 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { constants as bufferConstants } from 'node:buffer';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import * as zlib from 'node:zlib';
-import { decompress } from 'fzstd';
+import { Decompress } from 'fzstd';
+import { ZstdDecompress } from 'minizlib';
 
 export interface CodexRecord {
   type: string;
@@ -9,97 +12,168 @@ export interface CodexRecord {
   payload: Record<string, unknown>;
 }
 
-// Some Node releases return partial output for truncated Zstd input. Check
-// frame/block boundaries before caching any result (including concatenated frames).
-// Layout: facebook/zstd doc/zstd_compression_format.md, Frames and Blocks.
-function zstdFrames(data: Uint8Array): Array<{ start: number; end: number }> {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const frames: Array<{ start: number; end: number }> = [];
-  let offset = 0;
-  const requireBytes = (count: number) => {
-    if (offset + count > data.length) throw new Error('Truncated Zstandard rollout');
-  };
-  if (!data.length) throw new Error('Empty Zstandard rollout');
-  while (offset < data.length) {
-    const start = offset;
-    requireBytes(4);
-    const magic = view.getUint32(offset, true);
-    if ((magic & 0xfffffff0) === 0x184d2a50) {
-      requireBytes(8);
-      const size = view.getUint32(offset + 4, true);
-      requireBytes(8 + size);
-      offset += 8 + size;
-      continue;
-    }
-    if (magic !== 0xfd2fb528) throw new Error('Invalid Zstandard rollout frame');
-    offset += 4;
-    requireBytes(1);
-    const descriptor = data[offset++];
-    const single = (descriptor & 0x20) !== 0;
-    const sizeFlag = descriptor >> 6;
-    const headerSize = (single ? 0 : 1) + [0, 1, 2, 4][descriptor & 3]
-      + (sizeFlag ? 1 << sizeFlag : single ? 1 : 0);
-    requireBytes(headerSize);
-    offset += headerSize;
-    let last = false;
-    while (!last) {
-      requireBytes(3);
-      const header = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16);
-      offset += 3;
-      last = (header & 1) !== 0;
-      const type = (header >> 1) & 3;
-      if (type === 3) throw new Error('Invalid Zstandard rollout block');
-      const size = type === 1 ? 1 : header >> 3;
-      requireBytes(size);
-      offset += size;
-    }
-    if (descriptor & 4) { requireBytes(4); offset += 4; }
-    frames.push({ start, end: offset });
+const CHUNK_SIZE = 128 * 1024;
+
+function* fileChunks(fd: number, size: number): Generator<Buffer> {
+  for (let position = 0; position < size;) {
+    const chunk = Buffer.allocUnsafe(Math.min(CHUNK_SIZE, size - position));
+    const count = readSync(fd, chunk, 0, chunk.length, position);
+    if (!count) throw new Error('Codex rollout was truncated while reading');
+    position += count;
+    yield chunk.subarray(0, count);
   }
-  return frames;
 }
 
-/** Node 20 has no native Zstandard decoder; keep the fallback in the npm package. */
-export function decompressCodexRollout(data: Uint8Array, useNative = true): Uint8Array {
-  const frames = zstdFrames(data);
-  const native = (zlib as { zstdDecompressSync?: (data: Uint8Array) => Uint8Array }).zstdDecompressSync;
-  if (!useNative || !native) return decompress(data);
-  // Node versions can stop after the first frame. Decode each complete frame
-  // explicitly so appended history and skippable metadata never hide records.
-  const decoded = frames.map(frame => native(data.subarray(frame.start, frame.end)));
-  return decoded.length === 1 ? decoded[0] : Buffer.concat(decoded);
-}
+// RFC 8878 frame boundaries are needed even with native Zstd: some Node
+// releases stop after the first frame or accept truncated input at EOF.
+function* zstdChunks(chunks: Iterator<Buffer>, size: number, useNative: boolean): Generator<Uint8Array> {
+  let buffer: Buffer = Buffer.alloc(0);
+  let remaining = size;
+  function take(length: number): Buffer {
+    if (length > remaining) throw new Error('Truncated Zstandard rollout');
+    remaining -= length;
+    const parts: Buffer[] = [];
+    while (length > buffer.length) {
+      parts.push(buffer);
+      length -= buffer.length;
+      const next = chunks.next();
+      if (next.done) throw new Error('Truncated Zstandard rollout');
+      buffer = next.value;
+    }
+    const tail = buffer.subarray(0, length);
+    buffer = buffer.subarray(length);
+    return parts.length ? Buffer.concat([...parts, tail]) : tail;
+  }
 
-/** Read without materializing an uncompressed copy beside Codex's own history. */
-export function readCodexRollout(path: string): string {
-  let actualPath = path;
-  let bytes: Buffer;
+  if (!remaining) throw new Error('Empty Zstandard rollout');
+  const output: Uint8Array[] = [];
+  const onData = (chunk: Uint8Array) => { if (chunk.length) output.push(chunk); };
+  const native = useNative && typeof zlib.createZstdDecompress === 'function'
+    ? new ZstdDecompress({}).on('data', onData) : undefined;
+  let decodedFrame = false;
   try {
-    bytes = readFileSync(actualPath);
+    while (remaining) {
+      const magic = take(4);
+      const tag = magic.readUInt32LE();
+      if ((tag >>> 4) === 0x184d2a5) {
+        let skip = take(4).readUInt32LE();
+        while (skip > 0) {
+          const count = Math.min(skip, CHUNK_SIZE);
+          take(count);
+          skip -= count;
+        }
+        continue;
+      }
+      if (tag !== 0xfd2fb528) throw new Error('Invalid Zstandard rollout frame');
+      const flags = take(1);
+      const descriptor = flags[0];
+      const single = (descriptor & 0x20) !== 0;
+      const sizeFlag = descriptor >> 6;
+      const headerSize = (single ? 0 : 1) + [0, 1, 2, 4][descriptor & 3]
+        + (sizeFlag ? 1 << sizeFlag : single ? 1 : 0);
+      const header = Buffer.concat([magic, flags, take(headerSize)]);
+      // Reuse a single native context: a synchronous scan of thousands of small
+      // frames can otherwise allocate native handles faster than Node frees them.
+      if (decodedFrame) native?.reset();
+      const fallback = native ? undefined : new Decompress(onData);
+      let first = true;
+      let last = false;
+      while (!last) {
+        const block = take(3);
+        const bits = block.readUIntLE(0, 3);
+        const type = (bits >> 1) & 3;
+        if (type === 3 || (bits >>> 3) > CHUNK_SIZE) throw new Error('Invalid Zstandard rollout block');
+        last = (bits & 1) !== 0;
+        const parts = first ? [header, block] : [block];
+        parts.push(take(type === 1 ? 1 : bits >>> 3));
+        if (last && (descriptor & 4)) parts.push(take(4));
+        const input = Buffer.concat(parts);
+        if (native) native.write(input);
+        else fallback!.push(input, last);
+        yield* output;
+        output.length = 0;
+        first = false;
+      }
+      decodedFrame = true;
+    }
+    if (native && decodedFrame) {
+      native.end();
+      yield* output;
+    }
+  } finally {
+    native?.close();
+  }
+}
+
+export function parseCodexRecord(line: string): CodexRecord | undefined {
+  try {
+    const row = JSON.parse(line);
+    if (row && typeof row.type === 'string' && row.payload && typeof row.payload === 'object') return row;
+  } catch { /* Ignore malformed JSON or an unfinished final line in an active file. */ }
+}
+
+// A fork can replay its parent's metadata after its own.
+export function firstCodexMetadata(records: Iterable<CodexRecord>): Record<string, unknown> {
+  for (const row of records) {
+    if (row.type === 'session_meta') return row.payload;
+  }
+  return {};
+}
+
+function* rolloutRecords(chunks: Iterable<Uint8Array>, path: string): Generator<CodexRecord> {
+  const decoder = new StringDecoder('utf8');
+  const fragments: string[] = [];
+  let length = 0;
+  function* lines(text: string, final: boolean) {
+    let start = 0;
+    while (start < text.length || final) {
+      const newline = text.indexOf('\n', start);
+      const end = newline === -1 ? text.length : newline;
+      length += end - start;
+      if (length <= bufferConstants.MAX_STRING_LENGTH) {
+        if (end > start) fragments.push(text.slice(start, end));
+      } else {
+        fragments.length = 0;
+      }
+      if (newline === -1 && !final) break;
+      if (length > bufferConstants.MAX_STRING_LENGTH) {
+        console.warn(`[codexParser] Skipping oversized JSONL record in ${path}`);
+      } else if (length) {
+        const row = parseCodexRecord(fragments.length === 1 ? fragments[0] : fragments.join(''));
+        if (row) yield row;
+      }
+      length = 0;
+      fragments.length = 0;
+      if (newline === -1) break;
+      start = newline + 1;
+    }
+  }
+  for (const chunk of chunks) yield* lines(decoder.write(chunk), false);
+  yield* lines(decoder.end(), true);
+}
+
+// Multiple iterations see the same file descriptor and ignore later appends.
+// A metadata lookahead can stop early without leaving a native decoder open.
+export function readCodexRollout<T>(path: string, consume: (records: Iterable<CodexRecord>) => T, useNative = true): T {
+  let fd: number;
+  try {
+    fd = openSync(path, 'r');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    // A live Codex process may compress or restore a file after our directory scan.
-    actualPath = path.endsWith('.jsonl.zst') ? path.slice(0, -4) : `${path}.zst`;
-    bytes = readFileSync(actualPath);
+    path = path.endsWith('.jsonl.zst') ? path.slice(0, -4) : `${path}.zst`;
+    fd = openSync(path, 'r');
   }
-  return actualPath.endsWith('.zst')
-    ? Buffer.from(decompressCodexRollout(bytes)).toString('utf8')
-    : bytes.toString('utf8');
-}
-
-export function parseCodexRollout(raw: string): { meta: Record<string, unknown>; records: CodexRecord[] } {
-  const records: CodexRecord[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const row = JSON.parse(line);
-      if (row && typeof row.type === 'string' && row.payload && typeof row.payload === 'object') records.push(row);
-    } catch { /* An active rollout can end in an incomplete JSON line. */ }
+  try {
+    const size = fstatSync(fd).size;
+    return consume({
+      *[Symbol.iterator]() {
+        const chunks = fileChunks(fd, size);
+        yield* rolloutRecords(path.endsWith('.zst') ? zstdChunks(chunks, size, useNative) : chunks, path);
+      },
+    });
+  } finally {
+    closeSync(fd);
   }
-  // Forks start with their own metadata, then may replay the parent's metadata.
-  // The replay must never replace the owning thread's id, cwd or creation date.
-  const meta = records.find(row => row.type === 'session_meta')?.payload ?? {};
-  return { meta, records };
 }
 
 export function isInheritedCodexRecord(record: CodexRecord, meta: Record<string, unknown>): boolean {

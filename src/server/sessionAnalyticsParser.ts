@@ -23,7 +23,7 @@ import { calculateCost as calculateCodexCost } from './codexPricing.js';
 import { parseAllOpenCodeEvents } from './opencodeParser.js';
 import { scanPiSessions, parsePiSession } from './piParser.js';
 import { buildUsageFileIndex } from './usageFileIndex.js';
-import { readCodexRollout, parseCodexRollout, isInheritedCodexRecord } from './codexRollout.js';
+import { firstCodexMetadata, readCodexRollout, parseCodexRecord, isInheritedCodexRecord, type CodexRecord } from './codexRollout.js';
 import { scanDeepseekSessions, parseDeepseekSession, getDeepseekRevision } from './deepseekParser.js';
 import { readDeepseekTranscript } from './deepseekTranscripts.js';
 
@@ -160,7 +160,7 @@ function contextLabel(text: string, kind: NonNullable<SessionEvent['inputKind']>
   return contextSource(text)?.label || (kind === 'system' ? 'System prompt' : kind === 'developer' ? 'Developer instructions' : 'Runtime context');
 }
 
-function inputContextEvent(text: string, kind: NonNullable<SessionEvent['inputKind']>, timestamp: string, index: number): SessionEvent | undefined {
+function inputContextEvent(text: string, kind: NonNullable<SessionEvent['inputKind']>, timestamp: string, index: number, includeContent = true): SessionEvent | undefined {
   const source = redactSourceText(text);
   const content = truncate(source, INPUT_CONTEXT_LIMIT);
   if (!content) return undefined;
@@ -172,7 +172,7 @@ function inputContextEvent(text: string, kind: NonNullable<SessionEvent['inputKi
     inputKind: kind,
     contextLabel: label,
     summary: `${kind === 'system' ? 'System' : kind === 'developer' ? 'Developer' : 'Runtime'} input · ${label}`,
-    ...retainedContentFields(content),
+    ...retainedContentFields(content, includeContent),
     ...(source.length > INPUT_CONTEXT_LIMIT ? { contentTruncated: true } : {}),
   };
 }
@@ -253,9 +253,9 @@ function contentFields(content: string | undefined): Pick<SessionEvent, 'content
 }
 
 /** Codex event messages already contain locally-readable user/agent text. */
-function retainedContentFields(content: string | undefined): Pick<SessionEvent, 'contentPreview' | 'contentAvailable' | 'content'> {
+function retainedContentFields(content: string | undefined, includeContent = true): Pick<SessionEvent, 'contentPreview' | 'contentAvailable' | 'content'> {
   if (!content) return { contentAvailable: false };
-  return { ...contentFields(content), content };
+  return { ...contentFields(content), ...(includeContent ? { content } : {}) };
 }
 
 function valueSummary(value: unknown, depth = 0): string {
@@ -421,17 +421,12 @@ function codexMetadataEventKey(event: SessionEvent): string {
 function loadCodexTranscriptMetadata(): Map<string, { metadata: CodexTranscriptMetadata; paths: string[] }> {
   const indexed = buildUsageFileIndex({
     cacheName: 'codex-transcripts',
-    parserVersion: 'codex-transcripts-v1-zstd',
+    parserVersion: 'codex-transcripts-v2-streaming',
     files: scanCodexSessions().map(path => ({ path })),
     parseFile: ({ path }) => {
       try {
-        const raw = readCodexRollout(path);
-        const rollout = parseCodexRollout(raw);
-        if (typeof rollout.meta.id !== 'string') return null;
-        const metadata = parseCodexTranscriptMetadata(raw, rollout);
-        // Persist safe previews/counters, not a second copy of full transcripts.
-        metadata.events = metadata.events.map(({ content: _content, ...event }) => event);
-        return { id: rollout.meta.id, metadata, path };
+        const { id, metadata } = readCodexRollout(path, records => codexTranscript(records, false));
+        return typeof id === 'string' ? { id, metadata, path } : null;
       } catch (error) {
         console.warn(`[codexAnalytics] Cannot index rollout ${path}: ${error instanceof Error ? error.message : 'read failed'}`);
         return null;
@@ -461,22 +456,31 @@ function loadCodexTranscriptMetadata(): Map<string, { metadata: CodexTranscriptM
 }
 
 /** Exported for parser fixtures: canonical event_msg records beat synthetic role=user envelopes. */
-export function parseCodexTranscriptMetadata(raw: string, rollout = parseCodexRollout(raw)): CodexTranscriptMetadata {
+export function parseCodexTranscriptMetadata(raw: string): CodexTranscriptMetadata {
+  const records = raw.split('\n').map(parseCodexRecord).filter((row): row is CodexRecord => row !== undefined);
+  return codexTranscript(records, true).metadata;
+}
+
+function codexTranscript(records: Iterable<CodexRecord>, includeContent: boolean) {
   const initial: CodexTranscriptMetadata = { userTurns: 0, toolCalls: 0, skillCalls: 0, events: [] };
-  const records = rollout.records.filter(record => !isInheritedCodexRecord(record, rollout.meta));
-  // Desktop Codex writes a canonical event_msg for an actual human turn. It
-  // intentionally excludes the role=user envelope containing AGENTS.md and
-  // other runtime context, which must never become a user request in the UI.
-  const hasCanonicalUserMessages = records.some(record => {
-    const payload = record.payload as Record<string, unknown> | undefined;
-    return record.type === 'event_msg' && payload?.type === 'user_message' && typeof payload.message === 'string';
-  });
+  // Canonical user messages take precedence over role=user envelopes even
+  // when the envelope comes first. Stop the lookahead as soon as we know.
+  const meta = firstCodexMetadata(records);
+  let hasCanonicalUserMessages = false;
+  for (const record of records) {
+    if (record.type === 'event_msg' && record.payload.type === 'user_message'
+        && typeof record.payload.message === 'string' && !isInheritedCodexRecord(record, meta)) {
+      hasCanonicalUserMessages = true;
+      break;
+    }
+  }
   const calls = new Map<string, { name: string; isSkill: boolean }>();
   let taskIndex = -1;
   const inferredByTask = new Map<number, Set<string>>();
   const inferredEventsByTask = new Map<number, SessionEvent[]>();
   const explicitSkillTasks = new Set<number>();
   for (const record of records) {
+    if (isInheritedCodexRecord(record, meta)) continue;
     if (!validTimestamp(record.timestamp)) continue;
     const payload = record.payload;
     if (!payload || typeof payload !== 'object') continue;
@@ -494,7 +498,7 @@ export function parseCodexTranscriptMetadata(raw: string, rollout = parseCodexRo
           timestamp: record.timestamp,
           type: 'user_message',
           summary: 'User request',
-          ...retainedContentFields(input),
+          ...retainedContentFields(input, includeContent),
         });
       }
       if (item.type === 'agent_message' && typeof item.message === 'string') {
@@ -507,7 +511,7 @@ export function parseCodexTranscriptMetadata(raw: string, rollout = parseCodexRo
           type: 'assistant_message',
           summary: phase === 'final_answer' ? 'Final response' : 'Agent update',
           ...(phase ? { phase } : {}),
-          ...retainedContentFields(response),
+          ...retainedContentFields(response, includeContent),
         });
       }
       continue;
@@ -516,14 +520,14 @@ export function parseCodexTranscriptMetadata(raw: string, rollout = parseCodexRo
     if (item.type === 'message' && (item.role === 'system' || item.role === 'developer')) {
       const kind = item.role;
       for (const text of sourceTextItems(item.content)) {
-        const context = inputContextEvent(text, kind, record.timestamp, initial.events.length + 1);
+        const context = inputContextEvent(text, kind, record.timestamp, initial.events.length + 1, includeContent);
         if (context) initial.events.push(context);
       }
       continue;
     }
     if (item.type === 'message' && item.role === 'user') {
       for (const text of sourceTextItems(item.content).filter(isRuntimeContext)) {
-        const context = inputContextEvent(text, 'runtime', record.timestamp, initial.events.length + 1);
+        const context = inputContextEvent(text, 'runtime', record.timestamp, initial.events.length + 1, includeContent);
         if (context) initial.events.push(context);
       }
       if (hasCanonicalUserMessages) continue;
@@ -538,7 +542,7 @@ export function parseCodexTranscriptMetadata(raw: string, rollout = parseCodexRo
         timestamp: record.timestamp,
         type: 'user_message',
         summary: 'User request',
-        ...retainedContentFields(input),
+        ...retainedContentFields(input, includeContent),
       });
       continue;
     }
@@ -613,7 +617,7 @@ export function parseCodexTranscriptMetadata(raw: string, rollout = parseCodexRo
       });
     }
   }
-  return initial;
+  return { id: meta.id, metadata: initial };
 }
 
 function codexSessionToIndexed(session: ParsedSession, transcript: CodexTranscriptMetadata, paths: string[]): SessionAnalyticsIndexedSession {
@@ -1389,7 +1393,8 @@ function hydrateCodexEventContent(indexed: SessionAnalyticsIndexedSession): Sess
   const bodies = new Map<string, string>();
   for (const path of indexed.codexSourceFiles ?? []) {
     try {
-      for (const event of parseCodexTranscriptMetadata(readCodexRollout(path)).events) {
+      const { metadata } = readCodexRollout(path, records => codexTranscript(records, true));
+      for (const event of metadata.events) {
         if (event.content) bodies.set(codexMetadataEventKey(event), event.content);
       }
     } catch { /* Keep cached previews if a source is temporarily unavailable. */ }
