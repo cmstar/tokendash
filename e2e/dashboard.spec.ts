@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { generateDailyResponse, generateSessionDetail, mockApiRoutes } from './fixtures.js';
 import { formatTokens } from '../src/client/utils/formatters.js';
-import { localDateKey } from '../src/shared/dateRange.js';
+import { localDateKey, recentDateRange } from '../src/shared/dateRange.js';
 
 // ---------------------------------------------------------------------------
 // Helper: set up mocked page and wait for initial load
@@ -101,11 +101,9 @@ test.describe('Agent: OpenCode', () => {
   });
 
   test('project select shows projects', async ({ page }) => {
-    const select = page.locator('select');
-    await expect(select).toBeVisible();
-    // Check option count (options are always in DOM even if hidden in dropdown)
-    const optCount = await select.locator('option').count();
-    expect(optCount).toBeGreaterThan(1);
+    await page.getByRole('combobox', { name: 'Project', exact: true }).click();
+    await expect(page.getByRole('option')).toHaveCount(4);
+    await expect(page.getByRole('option', { name: 'my-project', exact: true })).toBeVisible();
   });
 
   test('heatmap renders with data', async ({ page }) => {
@@ -519,7 +517,7 @@ test.describe('Time range: 60D', () => {
 test.describe('Time range: ALL', () => {
   test.beforeEach(async ({ page }) => {
     await setupPage(page);
-    await page.locator('button:has-text("ALL")').click();
+    await page.getByRole('button', { name: 'ALL', exact: true }).click();
     await page.waitForTimeout(1000);
   });
 
@@ -575,17 +573,14 @@ test.describe('Agent switching', () => {
   test('switching agent updates project list', async ({ page }) => {
     await setupPage(page, { agents: ['claude', 'opencode'] });
 
-    const select = page.locator('select');
-    const optsBefore = await select.locator('option').count();
-
-    // Switch to OpenCode
+    const select = page.getByRole('combobox', { name: 'Project', exact: true });
+    await select.click();
+    await expect(page.getByRole('option', { name: 'project-alpha' })).toBeVisible();
+    await select.press('Escape');
     await selectAgent(page, 'OpenCode');
-    await page.waitForTimeout(3000);
-
-    // Project list should update
-    await expect(page.locator('select')).toBeVisible();
-    const optsAfter = await page.locator('select').locator('option').count();
-    expect(optsAfter).toBeGreaterThan(0);
+    await select.click();
+    await expect(page.getByRole('option', { name: 'my-project' })).toBeVisible();
+    await expect(page.getByRole('option', { name: 'project-alpha' })).toHaveCount(0);
   });
 });
 
@@ -760,24 +755,80 @@ test.describe('Metric switching', () => {
 // ---------------------------------------------------------------------------
 
 test.describe('Project filter', () => {
-  test.beforeEach(async ({ page }) => {
-    await setupPage(page);
+  test('sorts by directory name and filters by the chosen path among duplicates', async ({ page }) => {
+    await mockApiRoutes(page, { agents: ['claude'] });
+    const windowsPath = 'D:\\code\\team\\Api';
+    const days = [generateDailyResponse('claude').daily.at(-1)!];
+    await page.route('**/api/projects*', route => route.fulfill({ json: { projects: {
+      '/a/project10': days, [windowsPath]: days, '/b/project2': days, '/z/team/Api': days, '/last/alpha': days,
+    } } }));
+    await page.goto('/');
+    const select = page.getByRole('combobox', { name: 'Project', exact: true });
+    await select.click();
+    const options = page.getByRole('listbox', { name: 'Project' }).getByRole('option');
+    await expect(options.locator('span')).toHaveText(['All Projects', 'alpha', 'Api', 'Api', 'project2', 'project10']);
+    await expect(options.locator('small')).toHaveText(['/z/team', 'D:\\code\\team']);
+    await select.press('a');
+    await select.press('p');
+    await select.press('ArrowDown');
+    const request = page.waitForRequest(request => {
+      const url = new URL(request.url());
+      return url.pathname === '/api/blocks' && url.searchParams.get('project') === windowsPath;
+    });
+    await select.press('Enter');
+    await request;
+    await expect(select).toContainText('D:\\code\\team');
+    await select.click();
+    await expect(options.nth(3)).toHaveAttribute('aria-selected', 'true');
+    await select.press('Home');
+    await select.press('Escape');
+    await expect(select).toHaveAttribute('aria-expanded', 'false');
+    await expect(select).toContainText('D:\\code\\team');
   });
 
-  test('selecting a project filters data', async ({ page }) => {
-    const select = page.locator('select');
-    await expect(select).toBeVisible();
+  test('lists projects with activity in the selected dates and clears an out-of-range selection', async ({ page }) => {
+    await mockApiRoutes(page, { agents: ['claude'] });
+    const today = localDateKey();
+    const date = (ago: number) => recentDateRange(ago + 1, today).startDate;
+    const sample = generateDailyResponse('claude').daily[0];
+    const day = (ago: number) => ({ ...sample, date: date(ago) });
+    await page.route('**/api/projects*', route => route.fulfill({ json: { projects: {
+      active: [day(29), day(0)], week: [day(6)], month: [day(7)], boundary: [day(29)], older: [day(30)],
+    } } }));
+    await page.goto('/');
+    const select = page.getByRole('combobox', { name: 'Project', exact: true });
+    const options = page.getByRole('listbox', { name: 'Project' }).getByRole('option');
+    await select.click();
+    await expect(options).toHaveText(['All Projects', 'active', 'boundary', 'month', 'week']);
+    await options.getByText('month', { exact: true }).click();
+    await page.getByRole('button', { name: '7D', exact: true }).click();
+    await expect(select).toHaveText('All Projects');
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('dashboard_project')!))).toBe('');
+    await select.click();
+    await expect(options).toHaveText(['All Projects', 'active', 'week']);
+    await options.getByText('active', { exact: true }).click();
+    await page.getByRole('button', { name: 'Today', exact: true }).click();
+    await expect(select).toHaveText('active');
+    await select.click();
+    await expect(options).toHaveText(['All Projects', 'active']);
+    await select.press('Escape');
 
-    const options = select.locator('option');
-    const optCount = await options.count();
-    if (optCount > 1) {
-      const secondOptValue = await options.nth(1).getAttribute('value');
-      if (secondOptValue) {
-        await select.selectOption({ value: secondOptValue });
-        await page.waitForTimeout(1000);
-        await expect(page.locator('span:text-is("Total tokens")')).toBeVisible();
-      }
-    }
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    await page.getByLabel('Start date', { exact: true }).fill(date(29));
+    await page.getByLabel('End date', { exact: true }).fill(date(29));
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await select.click();
+    await expect(options).toHaveText(['All Projects', 'active', 'boundary']);
+    await select.press('Escape');
+    await page.getByLabel('End date', { exact: true }).fill(date(10));
+    await page.getByLabel('Start date', { exact: true }).fill(date(10));
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await select.click();
+    await expect(options).toHaveText(['All Projects']);
+    await select.press('Escape');
+    await page.getByRole('button', { name: 'ALL', exact: true }).click();
+    await select.click();
+    await expect(options).toHaveText(['All Projects', 'active', 'boundary', 'month', 'older', 'week']);
   });
 });
 
@@ -805,18 +856,9 @@ test.describe('Chart rendering', () => {
   });
 
   test('output/input ratio chart renders when project selected', async ({ page }) => {
-    // Output/Input ratio panel only shows when a specific project is selected
-    const select = page.locator('select');
-    const options = select.locator('option');
-    const optCount = await options.count();
-    if (optCount > 1) {
-      const secondOptValue = await options.nth(1).getAttribute('value');
-      if (secondOptValue) {
-        await select.selectOption({ value: secondOptValue });
-        await page.waitForTimeout(1000);
-        await expect(page.getByRole('heading', { name: 'Output / Input ratio' })).toBeVisible({ timeout: 5000 });
-      }
-    }
+    await page.getByRole('combobox', { name: 'Project', exact: true }).click();
+    await page.getByRole('option', { name: 'project-alpha', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Output / Input ratio' })).toBeVisible();
   });
 });
 

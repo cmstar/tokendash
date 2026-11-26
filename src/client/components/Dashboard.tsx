@@ -18,7 +18,8 @@ import { modelTokenMode, modelBreakdownTokens } from '../utils/modelAggregation.
 import { getPricing, GO_PRICING_SOURCE } from '../../shared/modelPricing.js';
 import { shortModelName } from '../utils/modelNames.js';
 import { CustomTimeRangePicker } from './CustomTimeRangePicker.js';
-import { filterByTime, customTimeRangeError, localDateKey, timeRangeDates, type CustomTimeRange, type TimeRangeKey } from '../../shared/dateRange.js';
+import { ProjectSelect } from './ProjectSelect.js';
+import { filterByTime, customTimeRangeError, isInCustomRange, localDateKey, timeRangeDates, type CustomTimeRange, type TimeRangeKey } from '../../shared/dateRange.js';
 import { AnalyticsSection } from './AnalyticsSection.js';
 import { CodexDataSourcesSettings } from './CodexDataSourcesSettings.js';
 import { AGENT_LABELS } from '../utils/agentAggregation.js';
@@ -115,16 +116,6 @@ function FilterTab({ options, value, onChange }: { options: readonly { key: stri
   );
 }
 
-function ProjectSelect({ projects, value, onChange }: { projects: string[]; value: string; onChange: (v: string) => void }) {
-  return (
-    <select aria-label="Project" value={value} onChange={e => onChange(e.target.value)}
-      className="bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-stone-800 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 max-w-[220px]">
-      <option value="">All Projects</option>
-      {projects.map(p => <option key={p} value={p}>{formatProjectName(p, projects)}</option>)}
-    </select>
-  );
-}
-
 /* ---- Aggregation helpers ---- */
 
 function filterProjectDaily(projects: Record<string, DailyEntry[]>, project: string, range: TimeRangeKey, custom: CustomTimeRange): DailyEntry[] {
@@ -187,7 +178,7 @@ export function Dashboard() {
   });
   const customRange = useMemo(() => storedCustomRange && !customTimeRangeError(storedCustomRange, today)
     ? storedCustomRange : { mode: 'dates' as const, days: 30, startDate: today, endDate: today }, [storedCustomRange, today]);
-  const [project, setProject] = useLocalStorageState('dashboard_project', '');
+  const [storedProject, setProject] = useLocalStorageState('dashboard_project', '');
   const [showPricing, setShowPricing] = useState(false);
   const [showDataSourceSettings, setShowDataSourceSettings] = useState(false);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
@@ -236,6 +227,35 @@ export function Dashboard() {
 
   const dailyData = useCcusageData(useCallback((refresh = false) => fetchDaily(agent, refresh), [agent]));
   const projectsData = useCcusageData(useCallback((refresh = false) => fetchProjects(agent, refresh), [agent]));
+
+  // 格式化上次更新时间（HH:mm:ss）
+  const lastUpdatedStr = dailyData.lastUpdated
+    ? dailyData.lastUpdated.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : null;
+  const [storedMetric, setMetric] = useLocalStorageState<MetricMode>('dashboard_metric', 'tokens');
+  const metric = storedMetric === 'time' && agent !== 'codex' ? 'tokens' : storedMetric;
+  const isTime = metric === 'time';
+  const [includeSystem, setIncludeSystem] = useLocalStorageState('dashboard_timing_includeSystem', false);
+  const [excludeZeroUsageDays, setExcludeZeroUsageDays] = useLocalStorageState('dashboard_timing_exclude_zero_days', false);
+  const rangeDates = useMemo(() => timeRangeDates(timeRange, customRange, today), [timeRange, customRange, today]);
+  const timingData = useTimingData(isTime && agent === 'codex', {
+    startDate: rangeDates?.startDate,
+    endDate: rangeDates?.endDate ?? today,
+    project: storedProject,
+    includeSystem,
+  }, sessionRefreshVersion);
+  const projectsInRange = useMemo(() => Object.entries(projectsData.data?.projects ?? {})
+    .map(([path, days]) => [path, timeRange === 'all' ? days : days.filter(day => isInCustomRange(day.date, rangeDates))] as const)
+    .filter(([, days]) => timeRange === 'all' || days.length > 0), [projectsData.data, timeRange, rangeDates]);
+  const projectList = useMemo(() => [...new Set([
+    ...projectsInRange.map(([path]) => path),
+    ...(timingData.availableProjects ?? []),
+  ])], [projectsInRange, timingData.availableProjects]);
+  const projectsReady = projectsData.data && !projectsData.data.sourceErrors?.length && (!isTime || timingData.availableProjects !== null);
+  const project = storedProject && projectsReady && !projectList.includes(storedProject) ? '' : storedProject;
+  useEffect(() => {
+    if (project !== storedProject) setProject(project);
+  }, [project, storedProject, setProject]);
   const blocksData = useCcusageData(useCallback((refresh = false) => fetchBlocks(agent, project, refresh), [agent, project]));
   const analyticsData = useCcusageData(useCallback((refresh = false) => fetchAnalytics(agent, project, refresh), [agent, project]));
 
@@ -252,27 +272,6 @@ export function Dashboard() {
     void refreshAgents();
     handleRefreshAll();
   }, [handleRefreshAll, refreshAgents]);
-
-  // 格式化上次更新时间（HH:mm:ss）
-  const lastUpdatedStr = dailyData.lastUpdated
-    ? dailyData.lastUpdated.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : null;
-  const [storedMetric, setMetric] = useLocalStorageState<MetricMode>('dashboard_metric', 'tokens');
-  const metric = storedMetric === 'time' && agent !== 'codex' ? 'tokens' : storedMetric;
-  const isTime = metric === 'time';
-  const [includeSystem, setIncludeSystem] = useLocalStorageState('dashboard_timing_includeSystem', false);
-  const [excludeZeroUsageDays, setExcludeZeroUsageDays] = useLocalStorageState('dashboard_timing_exclude_zero_days', false);
-  const timingDates = timeRangeDates(timeRange, customRange, today);
-  const timingData = useTimingData(isTime && agent === 'codex', {
-    startDate: timingDates?.startDate,
-    endDate: timingDates?.endDate ?? today,
-    project,
-    includeSystem,
-  }, sessionRefreshVersion);
-  const [timingProjects, setTimingProjects] = useState<string[]>([]);
-  useEffect(() => {
-    if (timingData.data) setTimingProjects(timingData.data.availableProjects);
-  }, [timingData.data]);
   useEffect(() => {
     if (storedMetric === 'time' && agent !== 'codex') setMetric('tokens');
   }, [storedMetric, agent, setMetric]);
@@ -291,12 +290,6 @@ export function Dashboard() {
   const coreError = !isTime && dailyData.error && !dailyData.data;
   const isTokens = metric === 'tokens';
   const dataKey = isTokens ? 'tokens' : 'cost';
-
-  const projectList = useMemo(() => [...new Set([
-    ...Object.keys(projectsData.data?.projects || {}),
-    ...(isTime ? timingProjects : []),
-    ...(isTime && project ? [project] : []),
-  ])].sort(), [projectsData.data, isTime, timingProjects, project]);
 
   // Filtered daily data: dailyData is canonical for all-project totals.
   // projectsData can be stale independently because the daemon caches each route
@@ -469,10 +462,8 @@ export function Dashboard() {
 
   // Project pie data
   const projectPieData = useMemo(() => {
-    if (!projectsData.data) return [];
-    return Object.entries(projectsData.data.projects)
-      .map(([path, entries]) => {
-        const filtered = filterByTime(entries, timeRange, customRange);
+    return projectsInRange
+      .map(([path, filtered]) => {
         return {
           name: formatProjectName(path, projectList),
           full: path,
@@ -483,7 +474,7 @@ export function Dashboard() {
       })
       .filter(d => d.tokens > 0)
       .sort((a, b) => b.tokens - a.tokens);
-  }, [projectsData.data, timeRange, customRange, today]);
+  }, [projectsInRange, projectList]);
 
   // Cache trend data
   const cacheTrendData = useMemo(() => filteredDaily.map(d => ({
@@ -746,7 +737,7 @@ export function Dashboard() {
               }} />}
             </div>
 
-            {projectList.length > 0 && (
+            {(projectsData.data || projectList.length > 0 || project) && (
               <>
                 <div className="w-px h-10 bg-stone-200/60 hidden sm:block"></div>
                 <div className="flex flex-col gap-2">
@@ -820,7 +811,7 @@ export function Dashboard() {
         includeSystem={includeSystem} onIncludeSystemChange={setIncludeSystem}
         excludeZeroUsageDays={excludeZeroUsageDays} onExcludeZeroUsageDaysChange={setExcludeZeroUsageDays}
         onRetry={() => setSessionRefreshVersion(version => version + 1)}
-        startDate={timingDates?.startDate} endDate={timingDates?.endDate ?? today} isToday={timeRange === 'today'} /> : metric === 'sessions' ? (
+        startDate={rangeDates?.startDate} endDate={rangeDates?.endDate ?? today} isToday={timeRange === 'today'} /> : metric === 'sessions' ? (
         <SessionAnalyticsSection key={`${agent}:${project}:${timeRange}:${customRange.startDate}:${customRange.endDate}:${customRange.days}`} agent={agent} project={project} range={timeRange} startDate={timeRange === 'custom' ? customRange.startDate : undefined} endDate={timeRange === 'custom' ? customRange.endDate : undefined} days={timeRange === 'recent' ? customRange.days : undefined} refreshVersion={sessionRefreshVersion} />
       ) : <>
       {agent === 'all' && <p className="mb-4 text-xs text-stone-500">Sources: {(agentsInfo?.available ?? []).map(source => AGENT_LABELS[source] || source).join(', ')}. Code changes and tool analytics include supported sources only.</p>}

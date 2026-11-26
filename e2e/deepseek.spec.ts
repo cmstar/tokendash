@@ -7,11 +7,13 @@ test('DeepSeek-only installation exposes usage, filters and real session details
   await expect(page.locator('button[aria-haspopup="menu"]')).toContainText('DeepSeek Harness');
   await expect(page.locator('span:text-is("Total tokens")')).toBeVisible();
   await expect(page.getByText('Model trend', { exact: true })).toBeVisible();
-  const project = page.locator('select').first();
-  await expect(project.locator('option')).toHaveCount(3);
-  await project.selectOption({ index: 1 });
+  const project = page.getByRole('combobox', { name: 'Project', exact: true });
+  await project.click();
+  await expect(page.getByRole('option')).toHaveCount(3);
+  await page.getByRole('option', { name: 'harness-library' }).click();
   await expect(page.locator('span:text-is("Total tokens")')).toBeVisible();
-  await project.selectOption({ index: 0 });
+  await project.click();
+  await page.getByRole('option', { name: 'All Projects' }).click();
 
   await page.getByRole('button', { name: 'Sessions', exact: true }).click();
   await expect(page.getByText('Session analytics', { exact: true })).toBeVisible();

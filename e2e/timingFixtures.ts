@@ -66,9 +66,9 @@ export function generateTimingResponse(url: URL, empty = false): TimingResponse 
   const startDate = url.searchParams.get('startDate') || timingDate(2);
   const endDate = url.searchParams.get('endDate') || timingDate();
   const project = url.searchParams.get('project');
-  const selected = empty ? [] : intervals.filter(row => row.date >= startDate && row.date <= endDate
-    && (!project || row.project === project)
+  const inRange = empty ? [] : intervals.filter(row => row.date >= startDate && row.date <= endDate
     && (row.role !== 'system' || url.searchParams.get('includeSystem') === 'true'));
+  const selected = inRange.filter(row => !project || row.project === project);
   // These fixture turns all finish on their start date. Filter full completed
   // main turns independently: child/system/aborted records are never answers.
   const completedTurns = empty ? [] : intervals.filter(row => row.role === 'main' && row.outcome === 'completed'
@@ -114,7 +114,7 @@ export function generateTimingResponse(url: URL, empty = false): TimingResponse 
         sum + Math.max(0, Math.min(row.end, (hour + 1) * 60) - Math.max(row.start, hour * 60)) * MINUTE, 0),
     }))).filter(row => row.workMs > 0),
     quality: { incompleteTurns: empty ? 0 : 2, estimatedTurns: empty ? 0 : 1, unattributedTurns: 0 },
-    availableProjects: [TIMING_PROJECT, TIMING_ONLY_PROJECT],
+    availableProjects: [...new Set(inRange.map(row => row.project))].sort(),
   };
 }
 

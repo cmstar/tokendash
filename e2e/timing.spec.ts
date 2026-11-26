@@ -251,12 +251,14 @@ test.describe('Codex Time metric', () => {
 
     // This project has activity on two dates, instead of the overall three.
     const project = page.getByRole('combobox', { name: 'Project', exact: true });
-    await project.selectOption(TIMING_ONLY_PROJECT);
+    await project.click();
+    await page.getByRole('option', { name: 'timing-only-project', exact: true }).click();
     await expectKpi(page, 'Total agent work time', '2h 30m');
     await expectKpi(page, 'Daily avg work time', '1h 15m');
     await expectKpi(page, 'Daily avg elapsed time', '1h 15m');
     await expect(detail.locator('tbody tr')).toHaveCount(7);
-    await project.selectOption('');
+    await project.click();
+    await page.getByRole('option', { name: 'All Projects', exact: true }).click();
     await expectKpi(page, 'Daily avg work time', '2h');
     await excludeZeroDays.uncheck();
     await expectKpi(page, 'Daily avg work time', '51m 25s');
@@ -268,15 +270,16 @@ test.describe('Codex Time metric', () => {
     await setup(page);
     await openTime(page);
     const project = page.getByRole('combobox', { name: 'Project', exact: true });
-    await expect(project.locator(`option[value="${TIMING_ONLY_PROJECT}"]`)).toHaveCount(1);
+    await project.click();
     const projectRequest = timingRequest(page, url => url.searchParams.get('project') === TIMING_ONLY_PROJECT);
-    await project.selectOption(TIMING_ONLY_PROJECT);
+    await page.getByRole('option', { name: 'timing-only-project', exact: true }).click();
     await projectRequest;
     await expectKpi(page, 'Total agent work time', '2h 30m');
     await expectKpi(page, 'Total elapsed time', '2h 30m');
     await expectKpi(page, 'Avg turn time', '1h');
     const mainRequest = timingRequest(page, url => url.searchParams.get('project') === TIMING_PROJECT);
-    await project.selectOption(TIMING_PROJECT);
+    await project.click();
+    await page.getByRole('option', { name: 'codex-project', exact: true }).click();
     await mainRequest;
     await expectKpi(page, 'Total agent work time', '3h');
     await expectKpi(page, 'Avg conversation time', '1h');
@@ -290,6 +293,24 @@ test.describe('Codex Time metric', () => {
     await expectKpi(page, 'Total elapsed time', '2h 30m');
     await expectKpi(page, 'Avg conversation time', '1h');
     await expectKpi(page, 'Avg turn time', '40m');
+  });
+
+  test('a time-only project disappears when the range no longer contains its turns', async ({ page }) => {
+    await setup(page);
+    await openTime(page);
+    const select = page.getByRole('combobox', { name: 'Project', exact: true });
+    await select.click();
+    await page.getByRole('option', { name: 'timing-only-project' }).click();
+    await expectKpi(page, 'Total agent work time', '2h 30m');
+
+    await page.getByRole('button', { name: 'Custom', exact: true }).click();
+    await page.getByLabel('Start date', { exact: true }).fill(timingDate(2));
+    await page.getByLabel('End date', { exact: true }).fill(timingDate(2));
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await expect(select).toHaveText('All Projects');
+    await expectKpi(page, 'Total agent work time', '30m');
+    await select.click();
+    await expect(page.getByRole('option')).toHaveText(['All Projects', 'codex-project']);
   });
 
   test('empty timing history keeps zero totals finite', async ({ page }) => {
